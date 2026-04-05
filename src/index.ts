@@ -19,11 +19,12 @@ import {
   getRegisteredChannelNames,
 } from './channels/registry.js';
 import {
+  ClaudeRuntime,
   ContainerOutput,
-  runContainerAgent,
+  DefaultContainerManager,
   writeGroupsSnapshot,
   writeTasksSnapshot,
-} from './container-runner.js';
+} from './runtime/index.js';
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
@@ -312,6 +313,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   return true;
 }
 
+// Singleton container manager — shared across all runtimes
+const containerManager = new DefaultContainerManager();
+
+function createRuntime(group: RegisteredGroup): ClaudeRuntime {
+  // TODO: Select runtime based on group.containerConfig?.runtime
+  // For now, always use Claude.
+  return new ClaudeRuntime();
+}
+
 async function runAgent(
   group: RegisteredGroup,
   prompt: string,
@@ -358,58 +368,62 @@ async function runAgent(
       }
     : undefined;
 
+  const runtime = createRuntime(group);
+
   try {
-    const output = await runContainerAgent(
+    let lastError: string | undefined;
+
+    for await (const event of runtime.run(prompt, {
       group,
-      {
-        prompt,
-        sessionId,
-        groupFolder: group.folder,
-        chatJid,
-        isMain,
-        assistantName: ASSISTANT_NAME,
-      },
-      (proc, containerName) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder),
-      wrappedOnOutput,
-    );
-
-    if (output.newSessionId) {
-      sessions[group.folder] = output.newSessionId;
-      setSession(group.folder, output.newSessionId);
-    }
-
-    if (output.status === 'error') {
-      // Detect stale/corrupt session — clear it so the next retry starts fresh.
-      // The session .jsonl can go missing after a crash mid-write, manual
-      // deletion, or disk-full. The existing backoff in group-queue.ts
-      // handles the retry; we just need to remove the broken session ID.
-      const isStaleSession =
-        sessionId &&
-        output.error &&
-        /no conversation found|ENOENT.*\.jsonl|session.*not found/i.test(
-          output.error,
-        );
-
-      if (isStaleSession) {
-        logger.warn(
-          { group: group.name, staleSessionId: sessionId, error: output.error },
-          'Stale session detected — clearing for next retry',
-        );
-        delete sessions[group.folder];
-        deleteSession(group.folder);
+      chatJid,
+      isMain,
+      assistantName: ASSISTANT_NAME,
+      sessionId,
+      toolExecutor: null as never, // TODO: Phase 2 — create ToolExecutor
+      containerManager,
+      onProcess: (proc, containerName, groupFolder) =>
+        queue.registerProcess(chatJid, proc, containerName, groupFolder),
+      _onStreamedOutput: wrappedOnOutput,
+    })) {
+      if (event.sessionId) {
+        sessions[group.folder] = event.sessionId;
+        setSession(group.folder, event.sessionId);
       }
 
+      if (event.type === 'error') {
+        lastError = event.error;
+
+        // Ask the runtime if this error means the session is stale
+        if (
+          sessionId &&
+          event.error &&
+          runtime.shouldClearSession?.(event.error)
+        ) {
+          logger.warn(
+            {
+              group: group.name,
+              staleSessionId: sessionId,
+              error: event.error,
+            },
+            'Stale session detected — clearing for next retry',
+          );
+          delete sessions[group.folder];
+          deleteSession(group.folder);
+        }
+      }
+    }
+
+    if (lastError) {
       logger.error(
-        { group: group.name, error: output.error },
-        'Container agent error',
+        { group: group.name, error: lastError, runtime: runtime.id },
+        'Agent error',
       );
       return 'error';
     }
 
     return 'success';
   } catch (err) {
-    logger.error({ group: group.name, err }, 'Agent error');
+    logger.error({ group: group.name, err, runtime: runtime.id }, 'Agent error');
     return 'error';
   }
 }
