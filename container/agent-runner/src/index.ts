@@ -280,11 +280,17 @@ async function runQuery(
   let messageCount = 0;
   let resultCount = 0;
 
-  // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+  // Load global instructions as additional system context (shared across all groups)
+  // Checks AGENT.md first (runtime-agnostic), falls back to CLAUDE.md
   let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
+  if (!containerInput.isMain) {
+    for (const filename of ['AGENT.md', 'CLAUDE.md']) {
+      const globalPath = `/workspace/global/${filename}`;
+      if (fs.existsSync(globalPath)) {
+        globalClaudeMd = fs.readFileSync(globalPath, 'utf-8');
+        break;
+      }
+    }
   }
 
   // Discover additional directories mounted at /workspace/extra/*
