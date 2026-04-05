@@ -43,9 +43,7 @@ export function getCurrentAuthMode(): AuthMode {
 export function hasValidOAuthCredentials(): boolean {
   try {
     if (!fs.existsSync(CLAUDE_CREDENTIALS_PATH)) return false;
-    const creds = JSON.parse(
-      fs.readFileSync(CLAUDE_CREDENTIALS_PATH, 'utf-8'),
-    );
+    const creds = JSON.parse(fs.readFileSync(CLAUDE_CREDENTIALS_PATH, 'utf-8'));
     const oauth = creds.claudeAiOauth;
     if (!oauth?.accessToken || !oauth?.refreshToken) return false;
     // Check if token hasn't expired (with 1 hour buffer)
