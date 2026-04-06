@@ -274,12 +274,18 @@ async function runClaudeQuery(
   let messageCount = 0;
   let resultCount = 0;
 
+  // Ensure CLAUDE.md exists from AGENT.md (Claude SDK reads CLAUDE.md from cwd)
+  const groupAgentMd = '/workspace/group/AGENT.md';
+  const groupClaudeMd = '/workspace/group/CLAUDE.md';
+  if (fs.existsSync(groupAgentMd) && !fs.existsSync(groupClaudeMd)) {
+    fs.copyFileSync(groupAgentMd, groupClaudeMd);
+    log('Copied AGENT.md → CLAUDE.md for Claude SDK');
+  }
+
   // Load global instructions (AGENT.md or CLAUDE.md)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  const globalAgentMdPath = '/workspace/global/AGENT.md';
   let globalClaudeMd: string | undefined;
   if (!containerInput.isMain) {
-    for (const p of [globalAgentMdPath, globalClaudeMdPath]) {
+    for (const p of ['/workspace/global/AGENT.md', '/workspace/global/CLAUDE.md']) {
       if (fs.existsSync(p)) {
         globalClaudeMd = fs.readFileSync(p, 'utf-8');
         break;
@@ -421,6 +427,26 @@ async function runCodexQuery(
   newSessionId?: string;
   closedDuringQuery: boolean;
 }> {
+  // Assemble AGENTS.md from global + group AGENT.md files
+  // Codex reads AGENTS.md from the working directory for persona/instructions
+  const agentsParts: string[] = [];
+  for (const dir of ['/workspace/global', '/workspace/group']) {
+    for (const filename of ['AGENT.md', 'CLAUDE.md']) {
+      const filePath = path.join(dir, filename);
+      if (fs.existsSync(filePath)) {
+        agentsParts.push(fs.readFileSync(filePath, 'utf-8'));
+        break; // use first found per directory
+      }
+    }
+  }
+  if (agentsParts.length > 0) {
+    fs.writeFileSync(
+      '/workspace/group/AGENTS.md',
+      agentsParts.join('\n\n---\n\n'),
+    );
+    log(`Assembled AGENTS.md from ${agentsParts.length} source(s)`);
+  }
+
   const codex = new Codex({
     apiKey: process.env.OPENAI_API_KEY,
     baseUrl: process.env.OPENAI_BASE_URL,

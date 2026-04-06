@@ -76,18 +76,6 @@ function buildVolumeMounts(
   const groupDir = resolveGroupFolderPath(group.folder);
   const runtime = getRuntime(group);
 
-  // Sync AGENT.md → SDK-specific filename so both SDKs discover it.
-  // AGENT.md is the canonical persona file; CLAUDE.md and AGENTS.md are copies.
-  const agentMd = path.join(groupDir, 'AGENT.md');
-  if (fs.existsSync(agentMd)) {
-    const content = fs.readFileSync(agentMd, 'utf-8');
-    if (runtime === 'claude') {
-      fs.writeFileSync(path.join(groupDir, 'CLAUDE.md'), content);
-    } else if (runtime === 'openai') {
-      fs.writeFileSync(path.join(groupDir, 'AGENTS.md'), content);
-    }
-  }
-
   if (isMain) {
     // Main gets the project root read-only. Writable paths the agent needs
     // (store, group folder, IPC, .claude/) are mounted separately below.
