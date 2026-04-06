@@ -15,6 +15,7 @@ import {
   DATA_DIR,
   DEFAULT_MODEL,
   DEFAULT_RUNTIME,
+  LITELLM_URL,
   TRIGGER_PATTERN,
 } from '../config.js';
 import { getRegisteredGroup, setRegisteredGroup } from '../db.js';
@@ -308,19 +309,38 @@ export class TelegramChannel implements Channel {
 
       if (args.length === 0) {
         // Show current model + available options for this runtime
-        const models = AVAILABLE_MODELS[runtime] || [];
+        const runtimeModels = AVAILABLE_MODELS[runtime] || [];
+        const customModels = LITELLM_URL ? (AVAILABLE_MODELS['custom'] || []) : [];
+        const baseUrl = group.containerConfig?.baseUrl;
+
         let reply = `Model: *${currentModel}*\nRuntime: ${runtime}`;
-        if (models.length > 0) {
+        if (baseUrl) {
+          reply += `\nEndpoint: ${baseUrl}`;
+        }
+
+        if (runtimeModels.length > 0) {
           reply +=
-            '\n\nAvailable:\n' +
-            models
+            '\n\n*' + runtime + ' models:*\n' +
+            runtimeModels
               .map(
                 (m) =>
                   `${m.id === currentModel ? '→' : '  '} \`${m.id}\` — ${m.name}`,
               )
               .join('\n');
-          reply += '\n\nSwitch with: `/model <name>`';
         }
+
+        if (customModels.length > 0) {
+          reply +=
+            '\n\n*Custom models (via LiteLLM):*\n' +
+            customModels
+              .map(
+                (m) =>
+                  `${m.id === currentModel ? '→' : '  '} \`${m.id}\` — ${m.name}`,
+              )
+              .join('\n');
+        }
+
+        reply += '\n\nSwitch with: `/model <name>`';
         ctx.reply(reply, { parse_mode: 'Markdown' });
         return;
       }
@@ -331,15 +351,35 @@ export class TelegramChannel implements Channel {
         return;
       }
 
-      // Update the group's container config with the new model
+      // Check if this is a custom model (needs LiteLLM)
+      const isCustomModel = (AVAILABLE_MODELS['custom'] || []).some(
+        (m) => m.id === target,
+      );
+
       const config = group.containerConfig || {};
       config.model = target;
+
+      if (isCustomModel) {
+        if (!LITELLM_URL) {
+          ctx.reply(
+            'Custom models require LiteLLM. Set `LITELLM_URL` in .env and start LiteLLM.',
+            { parse_mode: 'Markdown' },
+          );
+          return;
+        }
+        config.baseUrl = LITELLM_URL;
+      } else {
+        // Standard model — remove custom baseUrl if it was set
+        delete config.baseUrl;
+      }
+
       setRegisteredGroup(chatJid, {
         ...group,
         containerConfig: config,
       });
 
-      ctx.reply(`Model switched to *${target}*`, {
+      const via = isCustomModel ? ` (via LiteLLM)` : '';
+      ctx.reply(`Model switched to *${target}*${via}`, {
         parse_mode: 'Markdown',
       });
     });

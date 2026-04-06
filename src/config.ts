@@ -11,6 +11,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'DEFAULT_RUNTIME',
+  'LITELLM_URL',
   'TZ',
 ]);
 
@@ -77,8 +78,16 @@ export const AVAILABLE_MODELS: Record<
     { id: 'claude-sonnet-4-5-20250514', name: 'Claude Sonnet 4.5' },
     { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
   ],
-  // local: [] — populated when LiteLLM is configured
+  // Custom models via LiteLLM. These require LITELLM_URL in .env
+  // and LiteLLM running with the corresponding model configured.
+  custom: [
+    { id: 'ollama/llama3.1', name: 'Llama 3.1 (local via Ollama)' },
+    { id: 'ollama/codellama', name: 'Code Llama (local via Ollama)' },
+    { id: 'huggingface/meta-llama/Llama-3.1-70B-Instruct', name: 'Llama 3.1 70B (HuggingFace)' },
+  ],
 };
+
+export const LITELLM_URL = envConfig.LITELLM_URL || '';
 
 /** Resolve the container image for a given runtime. */
 export function getContainerImage(runtime?: string): string {
