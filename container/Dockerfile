@@ -31,7 +31,7 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Install shared tools globally. SDK CLIs are added by /add-agentSDK-* skills.
-RUN npm install -g agent-browser
+RUN npm install -g agent-browser @anthropic-ai/claude-code
 # claude-code: added by /add-agentSDK-claude
 # @openai/codex: added by /add-agentSDK-codex
 

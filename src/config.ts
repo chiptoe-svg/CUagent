@@ -64,7 +64,12 @@ export const AVAILABLE_MODELS: Record<
 > = {
   // SDK-specific model lists are added by /add-agentSDK-* skills.
   // codex: [...] added by /add-agentSDK-codex
-  // claude: [...] added by /add-agentSDK-claude
+  claude: [
+    { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+    { id: 'claude-sonnet-4-5-20250514', name: 'Claude Sonnet 4.5' },
+    { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
+  ],
 
   // Local models via OMLX (direct, no LiteLLM needed).
   // Requires OMLX running: brew services start omlx

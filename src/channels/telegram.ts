@@ -150,12 +150,26 @@ export class TelegramChannel implements Channel {
       const chatJid = `tg:${ctx.chat.id}`;
       const group = getRegisteredGroup(chatJid);
       const runtime = group?.containerConfig?.runtime || DEFAULT_RUNTIME;
-      ctx.reply(
-        `Runtime: *${runtime}*\nNo SDK-specific auth configured.\nInstall an agent SDK with /add-agentSDK-codex or /add-agentSDK-claude.`,
-        {
-          parse_mode: 'Markdown',
-        },
-      );
+      if (runtime === 'claude') {
+        const { getCurrentAuthMode, hasValidOAuthCredentials } = await import('../auth-switch.js');
+        const current = getCurrentAuthMode();
+        const label = current === 'api-key' ? 'API Key' : 'OAuth (Subscription)';
+        let credStatus: string;
+        if (current === 'api-key') credStatus = 'active';
+        else {
+          const envSecrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN']);
+          const hasEnvToken = !!(envSecrets.CLAUDE_CODE_OAUTH_TOKEN || envSecrets.ANTHROPIC_AUTH_TOKEN);
+          const hasCliCreds = hasValidOAuthCredentials();
+          if (hasEnvToken && hasCliCreds) credStatus = 'active (.env + CLI auto-refresh)';
+          else if (hasEnvToken) credStatus = 'active (.env token)';
+          else if (hasCliCreds) credStatus = 'active (CLI auto-refresh)';
+          else credStatus = 'no credentials found';
+        }
+        ctx.reply(`Runtime: *Claude*\nAuth: *${label}*\nCredentials: ${credStatus}`, { parse_mode: 'Markdown' });
+        return;
+      }
+
+      ctx.reply(`Runtime: *${runtime}*\nNo SDK-specific auth configured.`, { parse_mode: 'Markdown' });
     });
 
     // Command to view or switch model
