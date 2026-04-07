@@ -1,9 +1,9 @@
 // Agent SDK self-registration barrel.
 // Each import triggers the SDK module's registerAgentSdk() call.
-// Skill branches append/uncomment import lines here.
+// Install SDKs with /add-agentSDK-codex or /add-agentSDK-claude.
 
 // claude
-import './claude-runtime.js';
+// import './claude-runtime.js';
 
 // codex (openai)
-import './openai-runtime.js';
+// import './openai-runtime.js';

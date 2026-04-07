@@ -62,18 +62,10 @@ export const AVAILABLE_MODELS: Record<
   string,
   Array<{ id: string; name: string }>
 > = {
-  openai: [
-    { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini — fast, light quota' },
-    { id: 'gpt-5.2', name: 'GPT-5.2 — general purpose' },
-    { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex — tool/code focused' },
-    { id: 'gpt-5.4', name: 'GPT-5.4 — max capability' },
-  ],
-  claude: [
-    { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
-    { id: 'claude-sonnet-4-5-20250514', name: 'Claude Sonnet 4.5' },
-    { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
-  ],
+  // SDK-specific model lists are added by /add-agentSDK-* skills.
+  // codex: [...] added by /add-agentSDK-codex
+  // claude: [...] added by /add-agentSDK-claude
+
   // Local models via OMLX (direct, no LiteLLM needed).
   // Requires OMLX running: brew services start omlx
   local: [
