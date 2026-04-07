@@ -26,7 +26,7 @@ Three agent SDKs are supported:
 
 - **Codex (OpenAI)** — ChatGPT subscription or API key. Supports local models via OMLX/Ollama. Open source (Rust).
 - **Claude (Anthropic)** — Claude subscription OAuth or API key. Best built-in tools. Agent teams/swarms.
-- **Gemini (Google)** — Free tier available (60 req/min). 15+ built-in tools. Open source (TypeScript).
+- **Gemini (Google)** — Free tier available (60 req/min). 15+ built-in tools. Open source (TypeScript). ⚠️ *Added but untested — looking for early testers.*
 
 You can run one SDK or all three simultaneously — different groups can use different SDKs and models. Your main chat might use Codex with GPT-5.4, a code review group uses Claude Opus, and a research group uses Gemini Flash on the free tier. Each agent gets its own container with its own SDK, persona, memory, and skills. Switch models instantly with `/model` in Telegram.
 
