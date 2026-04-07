@@ -129,6 +129,11 @@ The container buildkit caches aggressively. `--no-cache` alone does NOT invalida
 - `.claude/settings.json` has project-level configuration
 - `.claude/settings.local.json` has local overrides
 
+## Before editing code
+- Research the codebase before editing. Never change code you haven't read.
+- Read the file first. Understand what's there before proposing changes.
+- Check how similar features are implemented elsewhere in the codebase and follow the same pattern.
+
 ## Problem-solving approach
 - When a library or API seems too complex, don't give up — look for CLI flags, output format options, or intermediate approaches before concluding "can't be done"
 - Check `--help` output for every CLI tool before writing integration code
