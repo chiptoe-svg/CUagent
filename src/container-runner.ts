@@ -136,23 +136,44 @@ function buildVolumeMounts(
 
   // SDK-specific home directory setup is added by /add-agentSDK-* skills.
   if (runtime === 'claude') {
-    const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+    const groupSessionsDir = path.join(
+      DATA_DIR,
+      'sessions',
+      group.folder,
+      '.claude',
+    );
     fs.mkdirSync(groupSessionsDir, { recursive: true });
     const settingsFile = path.join(groupSessionsDir, 'settings.json');
     if (!fs.existsSync(settingsFile)) {
-      fs.writeFileSync(settingsFile, JSON.stringify({
-        env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1', CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' },
-      }, null, 2) + '\n');
+      fs.writeFileSync(
+        settingsFile,
+        JSON.stringify(
+          {
+            env: {
+              CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+              CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+              CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+            },
+          },
+          null,
+          2,
+        ) + '\n',
+      );
     }
     const skillsSrc = path.join(process.cwd(), 'container', 'skills');
     const skillsDst = path.join(groupSessionsDir, 'skills');
     if (fs.existsSync(skillsSrc)) {
       for (const sd of fs.readdirSync(skillsSrc)) {
         const s = path.join(skillsSrc, sd);
-        if (fs.statSync(s).isDirectory()) fs.cpSync(s, path.join(skillsDst, sd), { recursive: true });
+        if (fs.statSync(s).isDirectory())
+          fs.cpSync(s, path.join(skillsDst, sd), { recursive: true });
       }
     }
-    mounts.push({ hostPath: groupSessionsDir, containerPath: '/home/node/.claude', readonly: false });
+    mounts.push({
+      hostPath: groupSessionsDir,
+      containerPath: '/home/node/.claude',
+      readonly: false,
+    });
   }
 
   // Base: writable home directory for any runtime.
@@ -241,9 +262,13 @@ function buildContainerArgs(
 
   // Runtime-specific credential injection is added by /add-agentSDK-* skills.
   if (runtime === 'claude') {
-    args.push('-e', `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`);
+    args.push(
+      '-e',
+      `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+    );
     const authMode = detectAuthMode();
-    if (authMode === 'api-key') args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    if (authMode === 'api-key')
+      args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
     else args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 

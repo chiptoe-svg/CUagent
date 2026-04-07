@@ -605,7 +605,10 @@ async function main(): Promise<void> {
   restoreRemoteControl();
 
   // Start credential proxy for Claude runtime
-  const proxyServer = await startCredentialProxy(CREDENTIAL_PROXY_PORT, PROXY_BIND_HOST);
+  const proxyServer = await startCredentialProxy(
+    CREDENTIAL_PROXY_PORT,
+    PROXY_BIND_HOST,
+  );
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
