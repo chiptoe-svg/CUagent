@@ -160,18 +160,13 @@ Here is the comparison of capabilties between the two:
 <tr>
   <td class="feature">Model selection</td>
   <td><code>/model</code> with Claude models only.</td>
-  <td><code>/model</code> with OpenAI models + custom/local ww/LiteLLM support.</td>
+  <td><code>/model</code> with OpenAI models + custom/local utilizing LiteLLM</td>
   <td><span class="badge badge-codex">Codex better</span><br><small>more options</small></td>
 </tr>
 </tbody>
 </table>
 
-<div class="legend">
-  <span><span class="badge badge-same">Same</span> Feature parity</span>
-  <span><span class="badge badge-functional">Functional</span> Works with minor differences</span>
-  <span><span class="badge badge-codex">Codex better/only</span> Codex advantage</span>
-  <span><span class="badge badge-claude">Claude better/only</span> Claude advantage</span>
-</div>
+
 </body>
 </html>
 
