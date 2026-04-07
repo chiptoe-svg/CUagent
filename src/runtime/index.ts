@@ -6,4 +6,4 @@
 // import './claude-runtime.js';
 
 // codex (openai)
-// import './openai-runtime.js';
+import './openai-runtime.js';

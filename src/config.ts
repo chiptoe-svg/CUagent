@@ -63,8 +63,13 @@ export const AVAILABLE_MODELS: Record<
   Array<{ id: string; name: string }>
 > = {
   // SDK-specific model lists are added by /add-agentSDK-* skills.
-  // codex: [...] added by /add-agentSDK-codex
   // claude: [...] added by /add-agentSDK-claude
+  codex: [
+    { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini — fast, light quota' },
+    { id: 'gpt-5.2', name: 'GPT-5.2 — general purpose' },
+    { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex — tool/code focused' },
+    { id: 'gpt-5.4', name: 'GPT-5.4 — max capability' },
+  ],
 
   // Local models via OMLX (direct, no LiteLLM needed).
   // Requires OMLX running: brew services start omlx

@@ -150,9 +150,28 @@ export class TelegramChannel implements Channel {
       const chatJid = `tg:${ctx.chat.id}`;
       const group = getRegisteredGroup(chatJid);
       const runtime = group?.containerConfig?.runtime || DEFAULT_RUNTIME;
-      ctx.reply(`Runtime: *${runtime}*\nNo SDK-specific auth configured.\nInstall an agent SDK with /add-agentSDK-codex or /add-agentSDK-claude.`, {
-        parse_mode: 'Markdown',
-      });
+
+      if (runtime === 'codex') {
+        const envSecrets = readEnvFile(['OPENAI_API_KEY']);
+        const hasApiKey = !!envSecrets.OPENAI_API_KEY;
+        const codexAuthFile = path.join(
+          process.env.HOME || '/home/node',
+          '.codex',
+          'auth.json',
+        );
+        const hasSubscription = fs.existsSync(codexAuthFile);
+        const currentModel = group?.containerConfig?.model || DEFAULT_MODEL;
+        let authMode: string;
+        if (hasSubscription && hasApiKey) authMode = 'Subscription (+ API key fallback)';
+        else if (hasSubscription) authMode = 'Subscription';
+        else if (hasApiKey) authMode = 'API Key';
+        else authMode = 'not configured';
+        ctx.reply(`Runtime: *Codex*\nModel: ${currentModel}\nAuth: ${authMode}`, { parse_mode: 'Markdown' });
+        return;
+      }
+
+      // Base: no SDK-specific auth
+      ctx.reply(`Runtime: *${runtime}*\nNo SDK-specific auth configured.`, { parse_mode: 'Markdown' });
     });
 
     // Command to view or switch model

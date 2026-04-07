@@ -133,8 +133,43 @@ function buildVolumeMounts(
   }
 
   // SDK-specific home directory setup is added by /add-agentSDK-* skills.
+  if (runtime === 'codex') {
+    // OpenAI/Codex: mount host ~/.codex/ for subscription auth + sessions
+    const hostCodexDir = path.join(process.env.HOME || '/home/node', '.codex');
+    if (fs.existsSync(hostCodexDir)) {
+      const groupCodexDir = path.join(DATA_DIR, 'sessions', group.folder, '.codex');
+      fs.mkdirSync(groupCodexDir, { recursive: true });
+
+      // Copy auth.json from host (subscription credentials)
+      const authSrc = path.join(hostCodexDir, 'auth.json');
+      const authDst = path.join(groupCodexDir, 'auth.json');
+      if (fs.existsSync(authSrc)) fs.copyFileSync(authSrc, authDst);
+
+      // Copy config.toml if it exists
+      const configSrc = path.join(hostCodexDir, 'config.toml');
+      const configDst = path.join(groupCodexDir, 'config.toml');
+      if (fs.existsSync(configSrc)) fs.copyFileSync(configSrc, configDst);
+
+      // Sync skills
+      const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+      const skillsDst = path.join(groupCodexDir, 'skills');
+      if (fs.existsSync(skillsSrc)) {
+        for (const skillDir of fs.readdirSync(skillsSrc)) {
+          const srcDir = path.join(skillsSrc, skillDir);
+          if (!fs.statSync(srcDir).isDirectory()) continue;
+          fs.cpSync(srcDir, path.join(skillsDst, skillDir), { recursive: true });
+        }
+      }
+
+      mounts.push({
+        hostPath: groupCodexDir,
+        containerPath: '/home/node/.codex',
+        readonly: false,
+      });
+    }
+  }
+
   // Base: writable home directory for any runtime.
-  // SDK skills add their own mounts (e.g. .claude/, .codex/) before this block.
   {
     const groupHomeDir = path.join(DATA_DIR, 'sessions', group.folder, 'home');
     fs.mkdirSync(groupHomeDir, { recursive: true });
@@ -219,7 +254,28 @@ function buildContainerArgs(
   args.push('-e', `TZ=${TIMEZONE}`);
 
   // Runtime-specific credential injection is added by /add-agentSDK-* skills.
-  // Each skill appends its own credential block here.
+  if (runtime === 'codex') {
+    // OpenAI/Codex: subscription auth via mounted ~/.codex/auth.json.
+    // Fall back to API key from .env if no subscription auth available.
+    const hostAuthFile = path.join(
+      process.env.HOME || '/home/node',
+      '.codex',
+      'auth.json',
+    );
+    if (!fs.existsSync(hostAuthFile)) {
+      const secrets = readEnvFile(['OPENAI_API_KEY']);
+      if (secrets.OPENAI_API_KEY) {
+        args.push('-e', `OPENAI_API_KEY=${secrets.OPENAI_API_KEY}`);
+      }
+    }
+    // Custom base URL: per-group override (LiteLLM) > global .env > none
+    const groupBaseUrl = group.containerConfig?.baseUrl;
+    const envSecrets = readEnvFile(['OPENAI_BASE_URL']);
+    const baseUrl = groupBaseUrl || envSecrets.OPENAI_BASE_URL;
+    if (baseUrl) {
+      args.push('-e', `OPENAI_BASE_URL=${baseUrl}`);
+    }
+  }
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
