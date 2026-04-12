@@ -11,9 +11,8 @@
   },
 
   "mcp": {
-    "command": "npx",
+    "command": "/app/node_modules/.bin/ms-365-mcp-server",
     "args": [
-      "@softeria/ms-365-mcp-server",
       "--toon",
       "--enabled-tools",
       "^(list-mail-(?!rule)|get-mail-(?!box)|create-mail-(?!rule)|delete-mail-(?!rule)|move-mail|update-mail-(?!rule)|add-mail|create-draft|list-calendar|get-calendar|create-calendar|update-calendar|delete-calendar|accept-calendar|decline-calendar|tentatively-accept|list-specific|get-specific|create-specific|update-specific|delete-specific|get-calendar-view|list-todo|get-todo|create-todo|update-todo|delete-todo|list-planner|get-planner|create-planner|update-planner|list-plan-tasks)"

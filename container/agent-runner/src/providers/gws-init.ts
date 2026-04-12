@@ -39,8 +39,13 @@ function setupGwsCredentials(): void {
 
   // Tell gws to use plain-text storage (no keyring)
   process.env.GWS_CREDENTIAL_STORE = 'plaintext';
-  const bashrc = path.join(process.env.HOME || '/home/node', '.bashrc');
-  fs.appendFileSync(bashrc, '\nexport GWS_CREDENTIAL_STORE=plaintext\n');
+  // Write to bashrc so child shells inherit it (ignore EACCES — home may be read-only)
+  try {
+    const bashrc = path.join(process.env.HOME || '/home/node', '.bashrc');
+    fs.appendFileSync(bashrc, '\nexport GWS_CREDENTIAL_STORE=plaintext\n');
+  } catch {
+    // Home dir may not be writable (e.g. Codex runtime) — env var is already set for this process
+  }
 
   log('Configured Google Workspace CLI credentials');
 }

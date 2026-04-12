@@ -74,11 +74,19 @@ RUN for CODEX_BIN in $(find /usr/local/lib/node_modules/@openai/codex /app/node_
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
+# Pre-compile TypeScript at build time (used as fallback if source hasn't changed)
+RUN cd /app && npx tsc --outDir /tmp/dist-prebuilt 2>&1 >&2 && \
+    ln -s /app/node_modules /tmp/dist-prebuilt/node_modules
+
 # Create entrypoint script
 # Container input (prompt, group info) is passed via stdin JSON.
 # Credentials are injected by the host's credential proxy — never passed here.
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
-RUN printf '#!/bin/bash\nset -e\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+#
+# Optimization: skip recompilation if mounted source matches the pre-built image.
+# Compares mtimes of /app/src/index.ts (mounted, writable) vs the pre-built dist.
+# Only recompiles when the host has newer agent-runner source.
+RUN printf '#!/bin/bash\nset -e\ncd /app\nSRC_MTIME=$(stat -c %%Y /app/src/index.ts 2>/dev/null || stat -f %%m /app/src/index.ts 2>/dev/null || echo 0)\nBUILT_MTIME=$(stat -c %%Y /tmp/dist-prebuilt/index.js 2>/dev/null || stat -f %%m /tmp/dist-prebuilt/index.js 2>/dev/null || echo 0)\nif [ "$SRC_MTIME" -gt "$BUILT_MTIME" ]; then\n  npx tsc --outDir /tmp/dist 2>&1 >&2\n  ln -sf /app/node_modules /tmp/dist/node_modules\nelse\n  cp -a /tmp/dist-prebuilt /tmp/dist\nfi\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 777 /home/node
