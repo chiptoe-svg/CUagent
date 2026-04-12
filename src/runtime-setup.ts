@@ -26,7 +26,7 @@ import { logger } from './logger.js';
 
 // --- Types ---
 
-export interface RuntimeSetupContext extends AuthContext {}
+export type RuntimeSetupContext = AuthContext;
 
 export interface HomeMount {
   hostPath: string;

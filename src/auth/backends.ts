@@ -75,7 +75,7 @@ function prepareCompatibilityEnv(ctx: AuthContext): AuthMaterial {
   };
 }
 
-function validateCompatibilityEnv(ctx: AuthContext): AuthValidationResult {
+function validateCompatibilityEnv(_ctx: AuthContext): AuthValidationResult {
   const hasLegacyAuth = fs.existsSync(getLegacyCodexAuthPath());
   if (hasLegacyAuth) {
     return { ok: true };
@@ -163,9 +163,7 @@ const secretManagerBackend: ProviderAuthBackend = {
   async validate() {
     return {
       ok: false,
-      warnings: [
-        'Secret-manager auth backend is not implemented yet.',
-      ],
+      warnings: ['Secret-manager auth backend is not implemented yet.'],
     };
   },
 };
@@ -185,9 +183,7 @@ const gatewayProxyBackend: ProviderAuthBackend = {
   async validate() {
     return {
       ok: false,
-      warnings: [
-        'Gateway/proxy auth backend is not implemented yet.',
-      ],
+      warnings: ['Gateway/proxy auth backend is not implemented yet.'],
     };
   },
 };
@@ -199,7 +195,9 @@ const AUTH_BACKENDS: ProviderAuthBackend[] = [
   gatewayProxyBackend,
 ];
 
-export function getProviderAuthBackends(runtime: string): ProviderAuthBackend[] {
+export function getProviderAuthBackends(
+  runtime: string,
+): ProviderAuthBackend[] {
   return AUTH_BACKENDS.filter((backend) => backend.supports(runtime));
 }
 
@@ -240,9 +238,7 @@ export async function prepareProviderAuth(
   return prepareProviderAuthSync(ctx);
 }
 
-export function prepareProviderAuthSync(
-  ctx: AuthContext,
-): AuthMaterial {
+export function prepareProviderAuthSync(ctx: AuthContext): AuthMaterial {
   const backends = getProviderAuthBackends(ctx.runtime);
   const merged: AuthMaterial = {};
 
@@ -306,7 +302,11 @@ export function materializeAuthMaterial(
     for (const file of material.files) {
       const dst = path.join(authDir, file.path);
       fs.mkdirSync(path.dirname(dst), { recursive: true });
-      fs.writeFileSync(dst, file.content, file.mode ? { mode: file.mode } : undefined);
+      fs.writeFileSync(
+        dst,
+        file.content,
+        file.mode ? { mode: file.mode } : undefined,
+      );
     }
   }
 
