@@ -49,20 +49,20 @@ The taxonomy is defined in `config.yaml`. Each category has context in `taxonomy
 
 | Category | Description |
 |----------|-------------|
-| Archive/SI-Development | Sonoco Institute development projects, equipment, systems |
-| Archive/SI-Operations | Sonoco Institute operations, scheduling, tours, events |
-| Archive/SI-Other | Sonoco Institute other/general |
-| Archive/GC-Development | Graphic Communications department development |
-| Archive/GC-Operations | Graphic Communications operations, admin |
-| Archive/GC-Curriculum | Graphic Communications curriculum, course design |
-| Archive/GC-Student | Graphic Communications student-related (internships, advising, registration) |
-| Archive/Classes | Course/class related (teaching, assignments, grades) |
-| Archive/Research | Research projects, papers, grants |
-| Archive/Industry | Industry contacts, partnerships, vendors, conferences |
-| Archive/University-Partners | Other universities, academic collaborations |
-| Archive/Personal | Personal correspondence |
-| Archive/Accounts | Service notifications, password resets, account confirmations |
-| Archive/Newsletters | Subscriptions, digests, mailing lists worth keeping |
+| SI-Development | Sonoco Institute development projects, equipment, systems |
+| SI-Operations | Sonoco Institute operations, scheduling, tours, events |
+| SI-Other | Sonoco Institute other/general |
+| GC-Development | Graphic Communications department development |
+| GC-Operations | Graphic Communications operations, admin |
+| GC-Curriculum | Graphic Communications curriculum, course design |
+| GC-Student | Graphic Communications student-related (internships, advising, registration) |
+| Classes | Course/class related (teaching, assignments, grades) |
+| Research | Research projects, papers, grants |
+| Industry | Industry contacts, partnerships, vendors, conferences |
+| University-Partners | Other universities, academic collaborations |
+| Personal | Personal correspondence |
+| Accounts | Service notifications, password resets, account confirmations |
+| Newsletters | Subscriptions, digests, mailing lists worth keeping |
 | To Delete | Spam, marketing, expired notifications, transient alerts |
 
 ---
@@ -152,12 +152,12 @@ For unmatched emails, classify using your own judgment. Consider:
 - The existing rules as examples of classification patterns
 
 LLM hints from rules.yaml:
-- Non-Clemson `.edu` addresses → likely `Archive/University-Partners`
+- Non-Clemson `.edu` addresses → likely `University-Partners`
 - `g.clemson.edu` / `clemson.edu` → classify by content (could be SI, GC, Classes, Research, Student — read the subject/body to decide)
 
 Produce a classification:
 ```
-folder: "Archive/GC-Student"
+folder: "GC-Student"
 confidence: 0.85
 reason: "From g.clemson.edu student address, subject about internship situation"
 ```
@@ -177,23 +177,23 @@ Present ALL classifications for approval via `mcp__nanoclaw__send_message`:
 
 *By rule* (N emails, no LLM cost):
   To Delete: N (quarantine, bitly, miro, etc.)
-  Archive/Industry: N (flexography, bobst)
+  Industry: N (flexography, bobst)
 
 *By age rule* (N emails):
   To Delete: N (expired google notifications, old adobesign)
 
 *By LLM* (N emails):
-  Archive/GC-Student: N — "Current Internship Situation" from dynastg@g.clemson.edu
-  Archive/SI-Operations: N — "Tour signup request" from ocarr@g.clemson.edu
-  Archive/GC-Curriculum: N — "GC 3800 Registration" from sbaier@g.clemson.edu
-  Archive/University-Partners: N — "Clemson Travel" from ctwomey@calpoly.edu
+  GC-Student: N — "Current Internship Situation" from dynastg@g.clemson.edu
+  SI-Operations: N — "Tour signup request" from ocarr@g.clemson.edu
+  GC-Curriculum: N — "GC 3800 Registration" from sbaier@g.clemson.edu
+  University-Partners: N — "Clemson Travel" from ctwomey@calpoly.edu
 
 *Needs your call* (N emails):
-  1. "Re: Graduate Student Applications" from santigomez82@gmail.com → Archive/GC-Student? (0.65)
-  2. "Budget meeting" from emweise@clemson.edu → Archive/GC-Operations? (0.72)
+  1. "Re: Graduate Student Applications" from santigomez82@gmail.com → GC-Student? (0.65)
+  2. "Budget meeting" from emweise@clemson.edu → GC-Operations? (0.72)
 
 Reply *approve* to apply all, or correct items:
-  *1:Archive/GC-Operations* to override item 1
+  *1:GC-Operations* to override item 1
   *reject* to skip this batch
 ```
 
@@ -243,13 +243,13 @@ Every 100 emails (check total stats), scan for overcrowded categories:
 
 If any category has 30+ emails and one sender domain accounts for 40%+ of that category:
 ```
-Archive/GC-Student has 45 emails. Top senders:
+GC-Student has 45 emails. Top senders:
   - *@g.clemson.edu: 38 emails
   - *@gmail.com: 7 emails
 
 Suggested subcategories:
-  - Archive/GC-Student/Internships
-  - Archive/GC-Student/Advising
+  - GC-Student/Internships
+  - GC-Student/Advising
 
 Want to create these? (Existing emails won't be re-filed — applies to future batches.)
 ```
@@ -285,9 +285,9 @@ Report:
 
 *Top folders:*
   To Delete: N
-  Archive/GC-Student: N
-  Archive/SI-Operations: N
-  Archive/Industry: N
+  GC-Student: N
+  SI-Operations: N
+  Industry: N
 ```
 
 ---
@@ -316,7 +316,7 @@ Group corrections by sender domain. If 2+ corrections point the same direction:
 ```
 Correction patterns found:
 
-  *@newsletter.example.com: 3 corrections, all → Archive/Newsletters
+  *@newsletter.example.com: 3 corrections, all → Newsletters
     Currently: no rule (LLM was classifying as To Delete)
     → Create rule?
 
