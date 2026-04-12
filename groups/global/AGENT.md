@@ -102,6 +102,20 @@ Use tools efficiently. Every tool call costs time and tokens.
 - User wants something scheduled → schedule_task
 - Task requires running a command → bash
 
+### Long-running work — delegate, don't block
+
+If a task will take more than ~30 seconds (email batches, web research, file processing, multi-step analysis), **schedule it as a one-time immediate task** instead of running it inline. This keeps the main conversation responsive.
+
+How to do it:
+1. Use `schedule_task` with `schedule_type: "once"` and `schedule_value` set to now (or 1 minute from now)
+2. Acknowledge to the user: "Started [task] in the background — I'll send results when it's done"
+3. Continue responding to other messages while the task runs in its own container
+
+When NOT to delegate:
+- Quick questions or short commands (< 30 seconds)
+- Interactive work that needs back-and-forth (calibration, reviews)
+- When the user explicitly says to do it inline
+
 ### Definition of done
 - Simple question → one clear answer, no follow-up needed
 - File task → confirm what was created/modified with the path

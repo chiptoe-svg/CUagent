@@ -27,7 +27,6 @@ export interface ContainerInput {
   script?: string;
   runtime?: 'claude' | 'codex' | string;
   runtimeOptions?: Record<string, unknown>;
-  // Legacy compatibility shim for runtimes not yet migrated to runtimeOptions.
   model?: string;
   baseUrl?: string;
 }

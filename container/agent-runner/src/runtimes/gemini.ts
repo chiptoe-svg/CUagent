@@ -21,7 +21,7 @@ import {
   shouldClose,
   writeOutput,
 } from '../shared.js';
-import { getProviderAgentDocs } from '../provider-registry.js';
+// Provider docs are loaded via skills, not globally
 import { registerContainerRuntime, type QueryResult } from '../runtime-registry.js';
 
 // --- ADK server management ---
@@ -202,18 +202,8 @@ async function runGeminiQuery(
     }
   }
 
-  // Inject provider docs into AGENT.md so ADK agent sees them
-  const providerDocs = getProviderAgentDocs();
-  if (providerDocs) {
-    const agentMdPath = '/workspace/group/AGENT.md';
-    if (fs.existsSync(agentMdPath)) {
-      const existing = fs.readFileSync(agentMdPath, 'utf-8');
-      if (!existing.includes('<!-- provider-docs -->')) {
-        fs.appendFileSync(agentMdPath, `\n\n<!-- provider-docs -->\n${providerDocs}\n`);
-        log('Injected provider docs into AGENT.md for Gemini');
-      }
-    }
-  }
+  // Provider docs (MS365, GWS usage instructions) are NOT injected globally.
+  // They live in the skills that use them (/email-archive, /add-email-account).
 
   const model = getContainerModel(containerInput, 'gemini-2.5-flash');
   let closedDuringQuery = false;

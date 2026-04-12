@@ -24,7 +24,7 @@ import {
   shouldClose,
   writeOutput,
 } from '../shared.js';
-import { getProviderAllowedTools, getProviderAgentDocs } from '../provider-registry.js';
+import { getProviderAllowedTools } from '../provider-registry.js';
 import { registerContainerRuntime, type QueryResult } from '../runtime-registry.js';
 
 // --- Claude SDK types ---
@@ -205,11 +205,8 @@ async function runClaudeQuery(
       }
     }
   }
-  // Append provider-specific docs (MS365, GWS, etc.)
-  const providerDocs = getProviderAgentDocs();
-  if (providerDocs) {
-    globalClaudeMd = (globalClaudeMd || '') + '\n\n' + providerDocs;
-  }
+  // Provider docs (MS365, GWS usage instructions) are NOT injected globally.
+  // They live in the skills that use them (/email-archive, /add-email-account).
 
   const extraDirs: string[] = [];
   const extraBase = '/workspace/extra';

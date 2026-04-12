@@ -214,7 +214,6 @@ export function getProviderCodexToml(): string {
       `type = "stdio"`,
       `command = "${provider.mcp.command}"`,
       `args = [${provider.mcp.args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(', ')}]`,
-      '',
       `[mcp_servers.${provider.id}.env]`,
     ];
 

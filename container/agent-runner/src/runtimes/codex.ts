@@ -18,8 +18,34 @@ import {
   shouldClose,
   writeOutput,
 } from '../shared.js';
-import { getProviderCodexToml, getProviderAgentDocs } from '../provider-registry.js';
+import { getProviderCodexToml } from '../provider-registry.js';
 import { registerContainerRuntime, type QueryResult } from '../runtime-registry.js';
+
+// --- Auto-compaction ---
+// Mimics Claude's auto_compact: when cumulative input tokens exceed
+// the threshold, the current thread generates a summary, and the next
+// query starts a fresh thread with the summary as context.
+
+const COMPACT_THRESHOLD = 40_000; // input tokens before triggering compaction
+const COMPACT_STATE_FILE = '/workspace/group/.codex-compact-state.json';
+
+interface CompactState {
+  cumulativeInputTokens: number;
+  sessionId?: string;
+}
+
+function loadCompactState(): CompactState {
+  try {
+    if (fs.existsSync(COMPACT_STATE_FILE)) {
+      return JSON.parse(fs.readFileSync(COMPACT_STATE_FILE, 'utf-8'));
+    }
+  } catch { /* ignore corrupt state */ }
+  return { cumulativeInputTokens: 0 };
+}
+
+function saveCompactState(state: CompactState): void {
+  fs.writeFileSync(COMPACT_STATE_FILE, JSON.stringify(state));
+}
 
 /** Codex-specific tool guidance — injected into AGENTS.md during assembly */
 const CODEX_TOOL_GUIDANCE = `
@@ -59,10 +85,47 @@ async function runCodexQuery(
   }
   agentsParts.push(CODEX_TOOL_GUIDANCE);
 
-  // Append provider-specific docs (MS365, GWS, etc.)
-  const providerDocs = getProviderAgentDocs();
-  if (providerDocs) {
-    agentsParts.push(providerDocs);
+  // Provider docs (MS365, GWS usage instructions) are NOT injected globally.
+  // They live in the skills that use them (/email-archive, /add-email-account)
+  // and are only loaded when the user's prompt matches a skill trigger.
+
+  // Pre-inject skills into AGENTS.md to avoid Codex reading them via tool calls.
+  // Match the user's prompt against skill names/descriptions to inject the full
+  // SKILL.md for relevant skills. Include a summary index of all skills so the
+  // agent knows what's available without reading each file.
+  const skillsDir = path.join(process.env.HOME || '/home/node', '.codex', 'skills');
+  if (fs.existsSync(skillsDir)) {
+    const skillIndex: string[] = ['## Available Skills'];
+    const promptLower = containerInput.prompt.toLowerCase();
+
+    for (const entry of fs.readdirSync(skillsDir)) {
+      const skillMd = path.join(skillsDir, entry, 'SKILL.md');
+      if (!fs.existsSync(skillMd)) continue;
+
+      const content = fs.readFileSync(skillMd, 'utf-8');
+      // Parse frontmatter name and description
+      const nameMatch = content.match(/^name:\s*(.+)$/m);
+      const descMatch = content.match(/^description:\s*(.+)$/m);
+      const name = nameMatch?.[1]?.trim() || entry;
+      const desc = descMatch?.[1]?.trim() || '';
+
+      skillIndex.push(`- **/${name}** — ${desc}`);
+
+      // Inject full content if the prompt references this skill
+      const triggers = [
+        `/${name}`,
+        `/${entry}`,
+        name.replace(/-/g, ' '),
+        entry.replace(/-/g, ' '),
+      ];
+      const isRelevant = triggers.some((t) => promptLower.includes(t.toLowerCase()));
+      if (isRelevant) {
+        agentsParts.push(`## Skill: /${name}\n\n${content}`);
+        log(`Pre-injected skill: ${name}`);
+      }
+    }
+
+    agentsParts.push(skillIndex.join('\n'));
   }
 
   if (agentsParts.length > 0) {
@@ -73,7 +136,9 @@ async function runCodexQuery(
     log(`Assembled AGENTS.md from ${agentsParts.length} source(s)`);
   }
 
-  // Write MCP server config for Codex
+  // Write MCP server config for Codex.
+  // Strip all [mcp_servers.*] from any existing config and rewrite fresh.
+  // This prevents stale/duplicate MCP blocks from crashing Codex.
   const codexConfigDir = path.join(
     process.env.HOME || '/home/node',
     '.codex',
@@ -81,24 +146,26 @@ async function runCodexQuery(
   fs.mkdirSync(codexConfigDir, { recursive: true });
   const configTomlPath = path.join(codexConfigDir, 'config.toml');
 
-  let existingConfig = '';
+  // Preserve non-MCP settings (plugins, features, projects, sandbox)
+  let baseConfig = '';
   if (fs.existsSync(configTomlPath)) {
-    existingConfig = fs.readFileSync(configTomlPath, 'utf-8');
+    const existing = fs.readFileSync(configTomlPath, 'utf-8');
+    // Keep everything before the first [mcp_servers section
+    const mcpIdx = existing.indexOf('[mcp_servers');
+    baseConfig = mcpIdx !== -1 ? existing.slice(0, mcpIdx).trimEnd() : existing.trimEnd();
   }
-  if (!existingConfig.includes('[mcp_servers.nanoclaw]')) {
-    const mcpConfig = `
-# Disable bwrap sandbox — container is already sandboxed by Docker
-[features]
-use_linux_sandbox_bwrap = false
 
-[sandbox_workspace_write]
-network_access = true
+  // Ensure sandbox settings exist
+  if (!baseConfig.includes('[features]')) {
+    baseConfig += `\n\n# Disable bwrap sandbox — container is already sandboxed by Docker\n[features]\nuse_linux_sandbox_bwrap = false\n\n[sandbox_workspace_write]\nnetwork_access = true`;
+  }
 
+  // Build fresh MCP server config
+  const mcpConfig = `
 [mcp_servers.nanoclaw]
 type = "stdio"
 command = "node"
 args = ["${mcpServerPath}"]
-
 [mcp_servers.nanoclaw.env]
 NANOCLAW_CHAT_JID = "${containerInput.chatJid}"
 NANOCLAW_GROUP_FOLDER = "${containerInput.groupFolder}"
@@ -106,27 +173,15 @@ NANOCLAW_IS_MAIN = "${containerInput.isMain ? '1' : '0'}"
 NANOCLAW_RUNTIME = "codex"
 NANOCLAW_MODEL = "${modelRef}"
 `;
-    fs.writeFileSync(configTomlPath, existingConfig + mcpConfig);
-    log('Wrote NanoClaw MCP config to Codex config.toml');
-  }
 
   // Provider-based MCP servers (MS365, etc.)
-  // Each provider JSON in /workspace/.providers/ can declare an MCP server.
   const providerToml = getProviderCodexToml();
-  if (providerToml) {
-    const currentConfig = fs.readFileSync(configTomlPath, 'utf-8');
-    // Only append providers not already in config
-    const newBlocks = providerToml
-      .split('\n\n')
-      .filter((block) => {
-        const match = block.match(/\[mcp_servers\.(\w+)\]/);
-        return match && !currentConfig.includes(`[mcp_servers.${match[1]}]`);
-      });
-    if (newBlocks.length > 0) {
-      fs.writeFileSync(configTomlPath, currentConfig + '\n' + newBlocks.join('\n\n'));
-      log(`Wrote ${newBlocks.length} provider MCP config(s) to Codex config.toml`);
-    }
-  }
+
+  fs.writeFileSync(
+    configTomlPath,
+    baseConfig + '\n\n' + mcpConfig + (providerToml ? '\n' + providerToml + '\n' : ''),
+  );
+  log('Wrote MCP config to Codex config.toml (clean rebuild)');
 
   // Discover additional directories (Fix #3)
   const extraDirs: string[] = [];
@@ -170,19 +225,56 @@ NANOCLAW_MODEL = "${modelRef}"
   // TODO: Enforce safe/operator at the container launch boundary instead of
   // only carrying the profile through runtimeOptions into the runner.
 
+  // Auto-compaction: check if we should start fresh due to context size
+  const compactState = loadCompactState();
+  let compactedSessionId = sessionId;
+  let compactionSummary: string | null = null;
+
+  if (
+    sessionId &&
+    compactState.cumulativeInputTokens >= COMPACT_THRESHOLD &&
+    compactState.sessionId === sessionId
+  ) {
+    log(`Auto-compaction triggered (${compactState.cumulativeInputTokens} input tokens). Generating summary...`);
+    try {
+      // Ask the current thread for a summary before discarding it
+      const summaryThread = codex.resumeThread(sessionId, threadOptions);
+      const summaryTurn = await summaryThread.runStreamed(
+        'Summarize our conversation so far in 300 words. Focus on: what tasks were completed, what decisions were made, what the user is currently working on, and any pending items. Be concise and factual.',
+      );
+      for await (const event of summaryTurn.events) {
+        if (event.type === 'item.completed' && event.item.type === 'agent_message') {
+          compactionSummary = event.item.text;
+        }
+      }
+      log(`Compaction summary: ${compactionSummary?.length || 0} chars`);
+    } catch (err) {
+      log(`Failed to generate compaction summary: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // Reset state — fresh session
+    compactedSessionId = undefined;
+    saveCompactState({ cumulativeInputTokens: 0 });
+  }
+
   // Try resuming a previous thread if we have a session ID.
   // Fall back to a fresh thread if resume fails (e.g. "no rollout found").
   let thread;
-  if (sessionId) {
+  if (compactedSessionId) {
     try {
-      thread = codex.resumeThread(sessionId, threadOptions);
-      log(`Resuming Codex thread: ${sessionId}`);
+      thread = codex.resumeThread(compactedSessionId, threadOptions);
+      log(`Resuming Codex thread: ${compactedSessionId}`);
     } catch (err) {
       log(`Resume failed (${err instanceof Error ? err.message : String(err)}), starting fresh thread`);
       thread = codex.startThread(threadOptions);
     }
   } else {
     thread = codex.startThread(threadOptions);
+  }
+
+  // If we just compacted, prepend the summary to the user's prompt
+  if (compactionSummary) {
+    prompt = `[CONTEXT FROM PREVIOUS SESSION]\n${compactionSummary}\n\n[NEW MESSAGE]\n${prompt}`;
+    log('Injected compaction summary into prompt');
   }
 
   let closedDuringQuery = false;
@@ -260,6 +352,12 @@ NANOCLAW_MODEL = "${modelRef}"
 
     if (usage) {
       log(`Codex usage: ${usage.input_tokens} in, ${usage.output_tokens} out`);
+      // Track cumulative input tokens for auto-compaction
+      const updatedState = loadCompactState();
+      updatedState.cumulativeInputTokens += usage.input_tokens;
+      updatedState.sessionId = newSessionId;
+      saveCompactState(updatedState);
+      log(`Cumulative input tokens: ${updatedState.cumulativeInputTokens}/${COMPACT_THRESHOLD}`);
     }
 
     // Rich conversation archive (Fix #2)
