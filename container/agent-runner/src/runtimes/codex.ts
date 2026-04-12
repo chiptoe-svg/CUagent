@@ -151,6 +151,12 @@ NANOCLAW_MODEL = "${modelRef}"
     },
   });
 
+  // ARCHITECTURE DECISION: sandboxMode is 'danger-full-access' because the
+  // Docker container IS the sandbox. The Codex inner sandbox (bubblewrap) is
+  // disabled since the container already restricts mounts, network, and UID.
+  // The host launcher (container-runner.ts) controls what's mounted and only
+  // applies seccomp=unconfined for Codex (needed for user namespaces).
+  // If NanoClaw becomes multi-tenant, enforce sandboxProfile here per group.
   const threadOptions = {
     model: modelRef,
     workingDirectory: '/workspace/group',

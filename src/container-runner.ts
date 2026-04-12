@@ -101,8 +101,12 @@ function buildVolumeMounts(
       });
     }
 
-    // Main gets writable access to the store (SQLite DB) so it can
-    // query and write to the database directly.
+    // ARCHITECTURE DECISION: Main group gets writable DB access as an escape
+    // hatch for operations not yet exposed via MCP tools (group registration,
+    // task management, etc.). SQLite WAL mode + one-container-at-a-time
+    // (GroupQueue) mitigate concurrent write risk. Long-term goal: make the
+    // MCP tool surface complete enough to switch this to read-only.
+    // TODO: Switch to readonly once MCP tools cover all needed mutations.
     const storeDir = path.join(projectRoot, 'store');
     mounts.push({
       hostPath: storeDir,
@@ -146,7 +150,11 @@ function buildVolumeMounts(
     }
   }
 
-  // Runtime-specific home directory setup (credentials, settings, skills)
+  // ARCHITECTURE DECISION: Runtime home is persistent and writable per-group.
+  // This is required for: Claude session resume, Codex config.toml accumulation,
+  // Gemini ADK session DB, and skill state. Auth material is regenerated from
+  // trusted host state each launch (via prepareHome), but session caches persist.
+  // For hardening: split into read-only inputs + ephemeral writable caches.
   const setup = getRuntimeSetup(runtime);
   const homeMount = setup.prepareHome({
     group,
@@ -169,9 +177,12 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Copy agent-runner source into a per-group writable location so agents
-  // can customize it (add tools, change behavior) without affecting other
-  // groups. Recompiled on container startup via entrypoint.sh.
+  // ARCHITECTURE DECISION: Agent-runner source is writable per-group by design.
+  // This allows skills and customizations to modify agent behavior per-group
+  // (e.g., adding MCP tools, changing IPC behavior). The trade-off is that a
+  // buggy agent could modify its own runner code persistently. This is acceptable
+  // for a single-user personal assistant where the user controls all groups.
+  // For multi-tenant use: mount read-only and move extensions to a plugin dir.
   const agentRunnerSrc = path.join(
     projectRoot,
     'container',

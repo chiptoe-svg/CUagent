@@ -83,6 +83,11 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
+// Dedup hashes for messages already sent to the user during a failed run.
+// Keyed by chatJid. Cleared when the cursor successfully advances.
+// Prevents duplicate delivery when a partial-failure run is retried.
+const recentSentHashes: Record<string, Set<string>> = {};
+
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -237,13 +242,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
+  const newCursor = missedMessages[missedMessages.length - 1].timestamp;
 
-  // Advance cursor so the piping path in startMessageLoop won't re-fetch
-  // these messages. Save the old cursor so we can roll back on error.
-  const previousCursor = lastAgentTimestamp[chatJid] || '';
-  lastAgentTimestamp[chatJid] =
-    missedMessages[missedMessages.length - 1].timestamp;
-  saveState();
+  // Cursor is NOT advanced until the run reaches a terminal state.
+  // This prevents silent message loss when the agent crashes mid-reply.
+  // Duplicate delivery is avoided by tracking sent message hashes.
 
   logger.info(
     { group: group.name, messageCount: missedMessages.length },
@@ -268,6 +271,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  // Track sent message hashes so retries after partial failure don't
+  // duplicate output the user already received. Persists across retries.
+  if (!recentSentHashes[chatJid]) recentSentHashes[chatJid] = new Set();
+  const sentHashes = recentSentHashes[chatJid];
+
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
@@ -279,8 +287,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+        // Simple hash for dedup on retry — first 200 chars is enough to
+        // distinguish distinct messages while being collision-tolerant.
+        const hash = text.slice(0, 200);
+        if (!sentHashes.has(hash)) {
+          await channel.sendMessage(chatJid, text);
+          sentHashes.add(hash);
+          outputSentToUser = true;
+        } else {
+          logger.debug(
+            { group: group.name },
+            'Skipped duplicate output on retry',
+          );
+        }
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
@@ -299,24 +318,23 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
-    // If we already sent output to the user, don't roll back the cursor —
-    // the user got their response and re-processing would send duplicates.
-    if (outputSentToUser) {
-      logger.warn(
-        { group: group.name },
-        'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
-      );
-      return true;
-    }
-    // Roll back cursor so retries can re-process these messages
-    lastAgentTimestamp[chatJid] = previousCursor;
-    saveState();
+    // Always roll back the cursor on error so the messages can be retried.
+    // Sent message hashes prevent duplicate delivery on the next attempt.
     logger.warn(
-      { group: group.name },
-      'Agent error, rolled back message cursor for retry',
+      {
+        group: group.name,
+        outputSentToUser,
+        sentCount: sentHashes.size,
+      },
+      'Agent error, cursor not advanced — messages eligible for retry',
     );
     return false;
   }
+
+  // Success: commit the cursor now that the run completed cleanly.
+  lastAgentTimestamp[chatJid] = newCursor;
+  saveState();
+  delete recentSentHashes[chatJid];
 
   return true;
 }
