@@ -90,7 +90,7 @@ External services are configured as JSON files in `container/providers/`. On sta
 - Agent docs (injected into AGENT.md at runtime)
 - Auth flow (login command for `npm run provider-login`)
 
-Built-in providers: `ms365` (Outlook/Calendar/Tasks), `gws` (Gmail/Drive/Calendar/Sheets/Docs), `imap` (placeholder).
+Shipped provider configs: `ms365` (Outlook/Calendar/Tasks), `gws` (Gmail/Drive/Calendar/Sheets/Docs), `imap` (placeholder). These are definitions only — run `/add-email-account` to authenticate and activate a provider for your account.
 
 Provider tokens are only mounted for authorized groups (main group by default). The container-side provider registry only enables MCP servers whose token files are actually present.
 
