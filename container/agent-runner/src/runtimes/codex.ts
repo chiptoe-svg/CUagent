@@ -26,7 +26,7 @@ import { registerContainerRuntime, type QueryResult } from '../runtime-registry.
 // the threshold, the current thread generates a summary, and the next
 // query starts a fresh thread with the summary as context.
 
-const COMPACT_THRESHOLD = 100_000; // input tokens before triggering compaction
+const COMPACT_THRESHOLD = 40_000; // input tokens before triggering compaction
 const COMPACT_STATE_FILE = '/workspace/group/.codex-compact-state.json';
 
 interface CompactState {
