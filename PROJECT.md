@@ -6,11 +6,13 @@ Multi-runtime personal assistant built on NanoClaw. Supports Claude, Codex (Open
 
 Four-layer system:
 1. **App Shell** — channels, state, scheduling, IPC (`src/index.ts`)
-2. **AgentRuntime** — modular SDK adapters that delegate to containers (`src/runtime/`)
-3. **Tool Layer** — SDK-native tools inside containers
-4. **Model Layer** — per-group model selection via container config
+2. **Runtime Boundary** — provider-neutral host adapters with `runtimeOptions` (`src/runtime/`)
+3. **Runtime Setup + Container Launch** — credential resolution, provider mounts, container spawning
+4. **In-Container Agent Runner** — SDK-specific agent loops with provider-driven MCP/tools/docs
 
 All SDKs run inside the same container image. The agent-runner detects the runtime from `ContainerInput.runtime` and uses the appropriate SDK. SDKs self-register via a registry pattern (same as channels).
+
+External services (MS365, Google Workspace, IMAP) are configured as provider JSON files — no code changes needed to add or remove a provider. Provider tokens are only mounted for authorized groups.
 
 ## Key Files
 
@@ -19,25 +21,32 @@ All SDKs run inside the same container image. The agent-runner detects the runti
 | `src/index.ts` | Orchestrator: state, message loop, runtime invocation |
 | `src/runtime/types.ts` | AgentRuntime, ContainerManager interfaces |
 | `src/runtime/registry.ts` | SDK self-registration registry |
-| `src/runtime/claude-runtime.ts` | Claude adapter |
-| `src/runtime/codex-runtime.ts` | Codex adapter |
-| `src/runtime/gemini-runtime.ts` | Gemini adapter |
+| `src/runtime/claude-runtime.ts` | Claude host adapter |
+| `src/runtime/codex-runtime.ts` | Codex host adapter |
+| `src/runtime/codex-policy.ts` | Codex-specific option resolution |
+| `src/runtime/gemini-runtime.ts` | Gemini host adapter |
 | `src/runtime/container-manager.ts` | Container lifecycle management |
 | `src/container-runner.ts` | Container spawning, mounts, credential injection |
+| `src/runtime-setup.ts` | Runtime home preparation, skill sync |
+| `src/provider-registry.ts` | Host-side provider plugin loader (token mounts, startup copy) |
+| `src/auth/types.ts` | Neutral auth backend contracts |
+| `src/auth/backends.ts` | Compatibility env/file auth backends |
 | `src/channels/registry.ts` | Channel registry (self-registration at startup) |
 | `src/ipc.ts` | IPC watcher and task processing |
 | `src/config.ts` | Config: runtime, model, trigger, paths, intervals |
 | `src/credential-proxy.ts` | Anthropic credential proxy (Claude runtime) |
-| `src/auth-switch.ts` | Toggle between API key and OAuth modes |
 | `src/task-scheduler.ts` | Runs scheduled tasks via AgentRuntime |
+| `container/providers/` | Provider JSON configs (ms365, gws, imap) |
 | `container/agent-runner/src/index.ts` | In-container shared agent loop |
 | `container/agent-runner/src/runtime-registry.ts` | Container-side SDK dispatch |
+| `container/agent-runner/src/provider-registry.ts` | Container-side provider discovery (MCP, tools, init hooks, docs) |
+| `container/agent-runner/src/shared.ts` | Shared container plumbing (IO, IPC, MessageStream) |
 | `container/agent-runner/src/runtimes/claude.ts` | Claude SDK query loop |
 | `container/agent-runner/src/runtimes/codex.ts` | Codex SDK query loop |
 | `container/agent-runner/src/runtimes/gemini.ts` | Gemini ADK runtime |
+| `container/agent-runner/src/providers/gws-init.ts` | GWS credential init hook |
 | `container/agent-runner/adk/nanoclaw_agent/` | ADK agent definition (Python) |
 | `container/agent-runner/src/specialist-runner.ts` | Specialist subagent dispatch |
-| `container/agent-runner/src/shared.ts` | Shared container plumbing (IO, IPC, MessageStream) |
 | `container/agent-runner/src/ipc-mcp-stdio.ts` | MCP server for NanoClaw IPC tools |
 | `container/skills/` | Skills loaded inside agent containers |
 | `groups/{name}/AGENT.md` | Per-group agent persona (runtime-agnostic) |
@@ -70,6 +79,20 @@ Telegram commands:
 **Claude:** OAuth token via `claude setup-token` stored in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`. Credential proxy on port 3001 injects into containers.
 
 **Gemini:** API key from https://aistudio.google.com/apikey stored as `GEMINI_API_KEY` in `.env`. Free tier: 60 req/min.
+
+## Providers
+
+External services are configured as JSON files in `container/providers/`. On startup, defaults are copied to `~/.nanoclaw/providers/`. Each provider declares:
+- Token paths (host and container mount points)
+- MCP server config (or null for CLI-based providers like `gws`)
+- Allowed tools (e.g., `mcp__ms365__*`)
+- Init hooks (e.g., GWS credential setup)
+- Agent docs (injected into AGENT.md at runtime)
+- Auth flow (login command for `npm run provider-login`)
+
+Built-in providers: `ms365` (Outlook/Calendar/Tasks), `gws` (Gmail/Drive/Calendar/Sheets/Docs), `imap` (placeholder).
+
+Provider tokens are only mounted for authorized groups (main group by default). The container-side provider registry only enables MCP servers whose token files are actually present.
 
 ## Agent Persona (AGENT.md)
 
