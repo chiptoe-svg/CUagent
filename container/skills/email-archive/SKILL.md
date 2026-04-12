@@ -49,21 +49,23 @@ The taxonomy is defined in `config.yaml`. Each category has context in `taxonomy
 
 | Category | Description |
 |----------|-------------|
-| SI-Development | Sonoco Institute development projects, equipment, systems |
-| SI-Operations | Sonoco Institute operations, scheduling, tours, events |
-| SI-Other | Sonoco Institute other/general |
-| GC-Development | Graphic Communications department development |
-| GC-Operations | Graphic Communications operations, admin |
-| GC-Curriculum | Graphic Communications curriculum, course design |
-| GC-Student | Graphic Communications student-related (internships, advising, registration) |
-| Classes | Course/class related (teaching, assignments, grades) |
-| Research | Research projects, papers, grants |
-| Industry | Industry contacts, partnerships, vendors, conferences |
-| University-Partners | Other universities, academic collaborations |
-| Personal | Personal correspondence |
-| Accounts | Service notifications, password resets, account confirmations |
-| Newsletters | Subscriptions, digests, mailing lists worth keeping |
+| Sorted/SI-Development | Sonoco Institute development projects, equipment, systems |
+| Sorted/SI-Operations | Sonoco Institute operations, scheduling, tours, events |
+| Sorted/SI-Other | Sonoco Institute other/general |
+| Sorted/GC-Development | Graphic Communications department development |
+| Sorted/GC-Operations | Graphic Communications operations, admin |
+| Sorted/GC-Curriculum | Graphic Communications curriculum, course design |
+| Sorted/GC-Student | Graphic Communications student-related (internships, advising, registration) |
+| Sorted/Classes | Course/class related (teaching, assignments, grades) |
+| Sorted/Research | Research projects, papers, grants |
+| Sorted/Industry | Industry contacts, partnerships, vendors, conferences |
+| Sorted/University-Partners | Other universities, academic collaborations |
+| Sorted/Personal | Personal correspondence |
+| Sorted/Accounts | Service notifications, password resets, account confirmations |
+| Sorted/Newsletters | Subscriptions, digests, mailing lists worth keeping |
 | To Delete | Spam, marketing, expired notifications, transient alerts |
+
+All categories except "To Delete" live under the `Sorted/` parent folder/label. In Gmail this creates a nested label hierarchy. In Outlook this creates a `Sorted` folder with subfolders.
 
 ---
 
@@ -157,7 +159,7 @@ LLM hints from rules.yaml:
 
 Produce a classification:
 ```
-folder: "GC-Student"
+folder: "Sorted/GC-Student"
 confidence: 0.85
 reason: "From g.clemson.edu student address, subject about internship situation"
 ```
@@ -177,23 +179,23 @@ Present ALL classifications for approval via `mcp__nanoclaw__send_message`:
 
 *By rule* (N emails, no LLM cost):
   To Delete: N (quarantine, bitly, miro, etc.)
-  Industry: N (flexography, bobst)
+  Sorted/Industry: N (flexography, bobst)
 
 *By age rule* (N emails):
   To Delete: N (expired google notifications, old adobesign)
 
 *By LLM* (N emails):
-  GC-Student: N — "Current Internship Situation" from dynastg@g.clemson.edu
-  SI-Operations: N — "Tour signup request" from ocarr@g.clemson.edu
-  GC-Curriculum: N — "GC 3800 Registration" from sbaier@g.clemson.edu
-  University-Partners: N — "Clemson Travel" from ctwomey@calpoly.edu
+  Sorted/GC-Student: N — "Current Internship Situation" from dynastg@g.clemson.edu
+  Sorted/SI-Operations: N — "Tour signup request" from ocarr@g.clemson.edu
+  Sorted/GC-Curriculum: N — "GC 3800 Registration" from sbaier@g.clemson.edu
+  Sorted/University-Partners: N — "Clemson Travel" from ctwomey@calpoly.edu
 
 *Needs your call* (N emails):
-  1. "Re: Graduate Student Applications" from santigomez82@gmail.com → GC-Student? (0.65)
-  2. "Budget meeting" from emweise@clemson.edu → GC-Operations? (0.72)
+  1. "Re: Graduate Student Applications" from santigomez82@gmail.com → Sorted/GC-Student? (0.65)
+  2. "Budget meeting" from emweise@clemson.edu → Sorted/GC-Operations? (0.72)
 
 Reply *approve* to apply all, or correct items:
-  *1:GC-Operations* to override item 1
+  *1:Sorted/GC-Operations* to override item 1
   *reject* to skip this batch
 ```
 
@@ -243,13 +245,13 @@ Every 100 emails (check total stats), scan for overcrowded categories:
 
 If any category has 30+ emails and one sender domain accounts for 40%+ of that category:
 ```
-GC-Student has 45 emails. Top senders:
+Sorted/GC-Student has 45 emails. Top senders:
   - *@g.clemson.edu: 38 emails
   - *@gmail.com: 7 emails
 
 Suggested subcategories:
-  - GC-Student/Internships
-  - GC-Student/Advising
+  - Sorted/GC-Student/Internships
+  - Sorted/GC-Student/Advising
 
 Want to create these? (Existing emails won't be re-filed — applies to future batches.)
 ```
@@ -285,9 +287,9 @@ Report:
 
 *Top folders:*
   To Delete: N
-  GC-Student: N
-  SI-Operations: N
-  Industry: N
+  Sorted/GC-Student: N
+  Sorted/SI-Operations: N
+  Sorted/Industry: N
 ```
 
 ---
@@ -316,7 +318,7 @@ Group corrections by sender domain. If 2+ corrections point the same direction:
 ```
 Correction patterns found:
 
-  *@newsletter.example.com: 3 corrections, all → Newsletters
+  *@newsletter.example.com: 3 corrections, all → Sorted/Newsletters
     Currently: no rule (LLM was classifying as To Delete)
     → Create rule?
 
