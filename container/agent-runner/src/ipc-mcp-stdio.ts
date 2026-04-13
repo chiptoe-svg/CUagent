@@ -549,6 +549,123 @@ server.tool(
   },
 );
 
+// --- File operation tools ---
+// These provide Claude-like file tools (Read, Write, Edit, Glob, Grep) as MCP tools.
+// Codex SDK only has bash — these eliminate API round-trips for file operations.
+
+import { execSync } from 'child_process';
+
+server.tool(
+  'file_read',
+  'Read a file and return its contents with line numbers. More efficient than using cat/head/tail via bash.',
+  {
+    path: z.string().describe('Absolute or workspace-relative file path'),
+    offset: z.number().optional().describe('Start line (1-based). Omit to read from beginning.'),
+    limit: z.number().optional().describe('Max lines to return. Omit to read entire file (up to 2000 lines).'),
+  },
+  async (args) => {
+    try {
+      const filePath = args.path.startsWith('/') ? args.path : path.join('/workspace/group', args.path);
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const lines = content.split('\n');
+      const start = Math.max(0, (args.offset || 1) - 1);
+      const end = args.limit ? start + args.limit : Math.min(lines.length, start + 2000);
+      const numbered = lines.slice(start, end).map((line, i) => `${start + i + 1}\t${line}`).join('\n');
+      return { content: [{ type: 'text' as const, text: numbered || '(empty file)' }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'file_write',
+  'Write content to a file (creates or overwrites). More efficient than echo/cat heredoc via bash.',
+  {
+    path: z.string().describe('Absolute or workspace-relative file path'),
+    content: z.string().describe('The full content to write'),
+  },
+  async (args) => {
+    try {
+      const filePath = args.path.startsWith('/') ? args.path : path.join('/workspace/group', args.path);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, args.content);
+      return { content: [{ type: 'text' as const, text: `Written ${args.content.length} bytes to ${filePath}` }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'file_edit',
+  'Replace a specific string in a file. Fails if old_string is not found or not unique. More efficient than sed/awk via bash.',
+  {
+    path: z.string().describe('Absolute or workspace-relative file path'),
+    old_string: z.string().describe('The exact text to find and replace'),
+    new_string: z.string().describe('The replacement text'),
+  },
+  async (args) => {
+    try {
+      const filePath = args.path.startsWith('/') ? args.path : path.join('/workspace/group', args.path);
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const count = content.split(args.old_string).length - 1;
+      if (count === 0) return { content: [{ type: 'text' as const, text: `Error: old_string not found in ${filePath}` }], isError: true };
+      if (count > 1) return { content: [{ type: 'text' as const, text: `Error: old_string found ${count} times — must be unique. Add more context.` }], isError: true };
+      fs.writeFileSync(filePath, content.replace(args.old_string, args.new_string));
+      return { content: [{ type: 'text' as const, text: `Edited ${filePath}` }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'file_glob',
+  'Find files matching a glob pattern. More efficient than find/ls via bash.',
+  {
+    pattern: z.string().describe('Glob pattern (e.g. "**/*.ts", "config.*")'),
+    cwd: z.string().optional().describe('Directory to search in (default: /workspace/group)'),
+  },
+  async (args) => {
+    try {
+      const dir = args.cwd || '/workspace/group';
+      // Use find with -name for simple patterns, or bash globstar for complex ones
+      const result = execSync(
+        `find ${dir} -path '*/node_modules' -prune -o -path '*/.git' -prune -o -name '${args.pattern.replace(/\*\*\//g, '')}' -print | head -100`,
+        { encoding: 'utf-8', timeout: 10000 },
+      ).trim();
+      return { content: [{ type: 'text' as const, text: result || '(no matches)' }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  'file_grep',
+  'Search file contents with a regex pattern. More efficient than grep/rg via bash.',
+  {
+    pattern: z.string().describe('Regex pattern to search for'),
+    path: z.string().optional().describe('File or directory to search (default: /workspace/group)'),
+    glob: z.string().optional().describe('Filter to specific file types (e.g. "*.ts", "*.yaml")'),
+  },
+  async (args) => {
+    try {
+      const searchPath = args.path || '/workspace/group';
+      let cmd = `grep -rn --include='${args.glob || '*'}' '${args.pattern.replace(/'/g, "'\\''")}' ${searchPath} | head -50`;
+      const result = execSync(cmd, { encoding: 'utf-8', timeout: 10000 }).trim();
+      return { content: [{ type: 'text' as const, text: result || '(no matches)' }] };
+    } catch (err) {
+      // grep returns exit code 1 for no matches
+      if (err && typeof err === 'object' && 'status' in err && (err as { status: number }).status === 1) {
+        return { content: [{ type: 'text' as const, text: '(no matches)' }] };
+      }
+      return { content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
