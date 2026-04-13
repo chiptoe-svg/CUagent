@@ -447,6 +447,9 @@ async function runCodexQuery(
     log('Initialize successful');
 
     // Step 2: Start or resume thread
+    // Pass AGENTS.md content explicitly via baseInstructions.
+    // The app-server CLI reads AGENTS.md from cwd, but the JSON-RPC
+    // protocol may not — baseInstructions ensures the persona is injected.
     const agentsMdContent = fs.existsSync('/workspace/group/AGENTS.md')
       ? fs.readFileSync('/workspace/group/AGENTS.md', 'utf-8')
       : undefined;
@@ -456,6 +459,7 @@ async function runCodexQuery(
       cwd: '/workspace/group',
       sandbox: 'danger-full-access' as const,
       approvalPolicy: 'never' as const,
+      personality: 'friendly' as const,
       baseInstructions: agentsMdContent,
     };
 
