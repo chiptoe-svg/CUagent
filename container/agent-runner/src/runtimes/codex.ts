@@ -1,51 +1,42 @@
 /**
- * OpenAI Codex SDK runtime for the container agent-runner.
+ * OpenAI Codex app-server runtime for the container agent-runner.
+ *
+ * Uses JSON-RPC over stdio to communicate with `codex app-server`.
+ * Replaces the previous SDK-based approach (thread.runStreamed) with the
+ * richer app-server protocol that supports native compaction, skill
+ * discovery, thread health checks, and eliminates config.toml generation.
+ *
  * Self-registers with the container runtime registry.
  */
 import fs from 'fs';
 import path from 'path';
-import { Codex } from '@openai/codex-sdk';
+import { spawn, type ChildProcess } from 'child_process';
+import { createInterface, type Interface as ReadlineInterface } from 'readline';
 
 import {
   ContainerInput,
   drainIpcInput,
-  formatTranscriptMarkdown,
   getContainerBaseUrl,
   getContainerModel,
   log,
-  ParsedMessage,
-  sanitizeFilename,
   shouldClose,
   writeOutput,
 } from '../shared.js';
-import { getProviderCodexToml } from '../provider-registry.js';
+import { getProviderMcpConfigs } from '../provider-registry.js';
 import { registerContainerRuntime, type QueryResult } from '../runtime-registry.js';
 
-// --- Auto-compaction ---
-// Mimics Claude's auto_compact: when cumulative input tokens exceed
-// the threshold, the current thread generates a summary, and the next
-// query starts a fresh thread with the summary as context.
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-const COMPACT_THRESHOLD = 40_000; // input tokens before triggering compaction
-const COMPACT_STATE_FILE = '/workspace/group/.codex-compact-state.json';
+/** Input tokens before triggering native compaction */
+const COMPACT_THRESHOLD = 40_000;
 
-interface CompactState {
-  cumulativeInputTokens: number;
-  sessionId?: string;
-}
+/** Timeout for the entire turn (5 minutes) */
+const TURN_TIMEOUT_MS = 5 * 60 * 1000;
 
-function loadCompactState(): CompactState {
-  try {
-    if (fs.existsSync(COMPACT_STATE_FILE)) {
-      return JSON.parse(fs.readFileSync(COMPACT_STATE_FILE, 'utf-8'));
-    }
-  } catch { /* ignore corrupt state */ }
-  return { cumulativeInputTokens: 0 };
-}
-
-function saveCompactState(state: CompactState): void {
-  fs.writeFileSync(COMPACT_STATE_FILE, JSON.stringify(state));
-}
+/** Timeout for initialize handshake */
+const INIT_TIMEOUT_MS = 30_000;
 
 /** Codex-specific tool guidance — injected into AGENTS.md during assembly */
 const CODEX_TOOL_GUIDANCE = `
@@ -63,22 +54,323 @@ const CODEX_TOOL_GUIDANCE = `
 These MCP tools execute locally with no shell overhead. Each bash tool call requires a full API round-trip — MCP tools are significantly faster.
 `;
 
-// --- Codex query ---
+// ---------------------------------------------------------------------------
+// JSON-RPC helpers
+// ---------------------------------------------------------------------------
 
-async function runCodexQuery(
-  prompt: string,
-  sessionId: string | undefined,
-  mcpServerPath: string,
-  containerInput: ContainerInput,
-): Promise<QueryResult> {
-  const runtimeOptions = containerInput.runtimeOptions || {};
-  const modelRef = getContainerModel(containerInput, 'gpt-5.4-mini');
-  const baseUrl = getContainerBaseUrl(containerInput) || process.env.OPENAI_BASE_URL;
-  const sandboxProfile =
-    runtimeOptions.sandboxProfile === 'operator' ? 'operator' : 'safe';
+let nextRequestId = 1;
 
-  // Assemble AGENTS.md from global + group AGENT.md files
+interface JsonRpcRequest {
+  id: number;
+  method: string;
+  params: Record<string, unknown>;
+}
+
+interface JsonRpcResponse {
+  id: number;
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+}
+
+interface JsonRpcNotification {
+  method: string;
+  params: Record<string, unknown>;
+}
+
+/** A server-initiated request (approvals, tool calls) — has an `id` we must respond to. */
+interface JsonRpcServerRequest {
+  id: number;
+  method: string;
+  params: Record<string, unknown>;
+}
+
+type JsonRpcMessage = JsonRpcResponse | JsonRpcNotification | JsonRpcServerRequest;
+
+function makeRequest(method: string, params: Record<string, unknown>): JsonRpcRequest {
+  return { id: nextRequestId++, method, params };
+}
+
+function isResponse(msg: JsonRpcMessage): msg is JsonRpcResponse {
+  return 'id' in msg && ('result' in msg || 'error' in msg) && !('method' in msg);
+}
+
+function isServerRequest(msg: JsonRpcMessage): msg is JsonRpcServerRequest {
+  return 'id' in msg && 'method' in msg;
+}
+
+// ---------------------------------------------------------------------------
+// App-server process management
+// ---------------------------------------------------------------------------
+
+interface AppServer {
+  process: ChildProcess;
+  readline: ReadlineInterface;
+  /** Pending client requests awaiting a response, keyed by request id */
+  pending: Map<number, { resolve: (r: JsonRpcResponse) => void; reject: (e: Error) => void }>;
+  /** Listeners for server notifications */
+  notificationHandlers: ((n: JsonRpcNotification) => void)[];
+  /** Listeners for server requests (approvals, tool calls) */
+  serverRequestHandlers: ((r: JsonRpcServerRequest) => void)[];
+}
+
+function spawnAppServer(configOverrides: string[]): AppServer {
+  const args = ['app-server', '--listen', 'stdio://'];
+  for (const override of configOverrides) {
+    args.push('-c', override);
+  }
+
+  log(`Spawning: codex ${args.join(' ')}`);
+  const proc = spawn('codex', args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+
+  const rl = createInterface({ input: proc.stdout! });
+
+  const server: AppServer = {
+    process: proc,
+    readline: rl,
+    pending: new Map(),
+    notificationHandlers: [],
+    serverRequestHandlers: [],
+  };
+
+  // Stderr → log
+  proc.stderr?.on('data', (chunk: Buffer) => {
+    const text = chunk.toString().trim();
+    if (text) log(`[codex-stderr] ${text}`);
+  });
+
+  // Parse incoming JSON-RPC messages
+  rl.on('line', (line: string) => {
+    if (!line.trim()) return;
+    let msg: JsonRpcMessage;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      log(`[codex-parse-error] ${line.slice(0, 200)}`);
+      return;
+    }
+
+    if (isResponse(msg)) {
+      const handler = server.pending.get(msg.id);
+      if (handler) {
+        server.pending.delete(msg.id);
+        handler.resolve(msg);
+      }
+    } else if (isServerRequest(msg)) {
+      for (const h of server.serverRequestHandlers) h(msg);
+    } else if ('method' in msg) {
+      for (const h of server.notificationHandlers) h(msg as JsonRpcNotification);
+    }
+  });
+
+  proc.on('error', (err) => {
+    log(`[codex-process-error] ${err.message}`);
+    // Reject all pending requests
+    for (const [, handler] of server.pending) {
+      handler.reject(err);
+    }
+    server.pending.clear();
+  });
+
+  proc.on('exit', (code, signal) => {
+    log(`[codex-exit] code=${code} signal=${signal}`);
+    const err = new Error(`Codex app-server exited: code=${code} signal=${signal}`);
+    for (const [, handler] of server.pending) {
+      handler.reject(err);
+    }
+    server.pending.clear();
+  });
+
+  return server;
+}
+
+function sendRequest(server: AppServer, method: string, params: Record<string, unknown>, timeoutMs = 60_000): Promise<JsonRpcResponse> {
+  const req = makeRequest(method, params);
+  const line = JSON.stringify(req) + '\n';
+
+  return new Promise<JsonRpcResponse>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      server.pending.delete(req.id);
+      reject(new Error(`Timeout waiting for ${method} response (${timeoutMs}ms)`));
+    }, timeoutMs);
+
+    server.pending.set(req.id, {
+      resolve: (r) => { clearTimeout(timer); resolve(r); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+
+    try {
+      server.process.stdin!.write(line);
+    } catch (err) {
+      clearTimeout(timer);
+      server.pending.delete(req.id);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+}
+
+function sendResponse(server: AppServer, id: number, result: unknown): void {
+  const line = JSON.stringify({ id, result }) + '\n';
+  try {
+    server.process.stdin!.write(line);
+  } catch (err) {
+    log(`[codex-send-error] Failed to send response for id=${id}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function killServer(server: AppServer): void {
+  try {
+    server.readline.close();
+    server.process.kill('SIGTERM');
+  } catch { /* ignore */ }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-approval handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Auto-approve all server requests. We're inside a Docker sandbox so
+ * command execution, file changes, and permission escalation are all safe.
+ */
+function handleServerRequest(server: AppServer, req: JsonRpcServerRequest): void {
+  const method = req.method;
+  log(`[approval] Auto-approving: ${method}`);
+
+  switch (method) {
+    case 'item/commandExecution/requestApproval':
+      sendResponse(server, req.id, { decision: 'accept' });
+      break;
+
+    case 'item/fileChange/requestApproval':
+      sendResponse(server, req.id, { decision: 'accept' });
+      break;
+
+    case 'item/permissions/requestApproval':
+      // Grant full permissions — Docker is our sandbox
+      sendResponse(server, req.id, {
+        permissions: {
+          fileSystem: { read: ['/'], write: ['/'] },
+          network: { enabled: true },
+        },
+        scope: 'session',
+      });
+      break;
+
+    case 'applyPatchApproval':
+    case 'execCommandApproval':
+      // Legacy approval format uses "approved" instead of "accept"
+      sendResponse(server, req.id, { decision: 'approved' });
+      break;
+
+    case 'item/tool/call': {
+      // Dynamic tool call — we don't register any dynamic tools, so this
+      // shouldn't fire. MCP tools (nanoclaw, ms365) are handled internally
+      // by the app-server via config.toml. Return failure so the model
+      // knows the tool isn't available rather than getting a silent empty result.
+      const toolName = (req.params as { tool?: string }).tool || 'unknown';
+      log(`[approval] Unexpected dynamic tool call: ${toolName}`);
+      sendResponse(server, req.id, {
+        success: false,
+        contentItems: [{ type: 'inputText', text: `Tool "${toolName}" is not available. Use MCP tools instead.` }],
+      });
+      break;
+    }
+
+    case 'item/tool/requestUserInput':
+    case 'mcpServer/elicitation/request':
+      // Can't get user input in headless mode — decline gracefully
+      sendResponse(server, req.id, { input: null });
+      break;
+
+    default:
+      // Unknown request type — try generic approval
+      log(`[approval] Unknown server request method: ${method}, attempting generic approval`);
+      sendResponse(server, req.id, { decision: 'accept' });
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MCP config builder (replaces config.toml generation)
+// ---------------------------------------------------------------------------
+
+interface McpServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+function buildMcpConfig(mcpServerPath: string, containerInput: ContainerInput, modelRef: string): Record<string, McpServerConfig> {
+  const servers: Record<string, McpServerConfig> = {};
+
+  // NanoClaw IPC MCP server
+  servers['nanoclaw'] = {
+    command: 'node',
+    args: [mcpServerPath],
+    env: {
+      NANOCLAW_CHAT_JID: containerInput.chatJid,
+      NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+      NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      NANOCLAW_RUNTIME: 'codex',
+      NANOCLAW_MODEL: modelRef,
+    },
+  };
+
+  // Provider-based MCP servers (MS365, etc.)
+  const providerConfigs = getProviderMcpConfigs();
+  for (const [name, config] of Object.entries(providerConfigs)) {
+    servers[name] = {
+      command: config.command,
+      args: config.args || [],
+      env: config.env || {},
+    };
+  }
+
+  return servers;
+}
+
+/**
+ * Write a minimal config.toml with just MCP server definitions.
+ * The app-server auto-reads this file. We write it fresh each time
+ * to avoid stale/duplicate section bugs from the old approach.
+ */
+function writeMcpConfigToml(servers: Record<string, McpServerConfig>): void {
+  const codexConfigDir = path.join(process.env.HOME || '/home/node', '.codex');
+  fs.mkdirSync(codexConfigDir, { recursive: true });
+  const configTomlPath = path.join(codexConfigDir, 'config.toml');
+
+  const lines: string[] = [];
+  for (const [name, config] of Object.entries(servers)) {
+    lines.push(`[mcp_servers.${name}]`);
+    lines.push('type = "stdio"');
+    lines.push(`command = "${config.command}"`);
+    if (config.args && config.args.length > 0) {
+      const argsStr = config.args.map((a) => `"${a}"`).join(', ');
+      lines.push(`args = [${argsStr}]`);
+    }
+    if (config.env && Object.keys(config.env).length > 0) {
+      lines.push(`[mcp_servers.${name}.env]`);
+      for (const [key, value] of Object.entries(config.env)) {
+        lines.push(`${key} = "${value}"`);
+      }
+    }
+    lines.push('');
+  }
+
+  fs.writeFileSync(configTomlPath, lines.join('\n'));
+  log(`Wrote MCP config.toml (${Object.keys(servers).length} servers, clean rebuild)`);
+}
+
+// ---------------------------------------------------------------------------
+// AGENTS.md assembly — persona only, no skills (app-server handles those)
+// ---------------------------------------------------------------------------
+
+function assembleAgentsMd(): void {
   const agentsParts: string[] = [];
+
   for (const dir of ['/workspace/global', '/workspace/group']) {
     for (const filename of ['AGENT.md', 'CLAUDE.md']) {
       const filePath = path.join(dir, filename);
@@ -88,50 +380,8 @@ async function runCodexQuery(
       }
     }
   }
+
   agentsParts.push(CODEX_TOOL_GUIDANCE);
-
-  // Provider docs (MS365, GWS usage instructions) are NOT injected globally.
-  // They live in the skills that use them (/email-archive, /add-email-account)
-  // and are only loaded when the user's prompt matches a skill trigger.
-
-  // Pre-inject skills into AGENTS.md to avoid Codex reading them via tool calls.
-  // Match the user's prompt against skill names/descriptions to inject the full
-  // SKILL.md for relevant skills. Include a summary index of all skills so the
-  // agent knows what's available without reading each file.
-  const skillsDir = path.join(process.env.HOME || '/home/node', '.codex', 'skills');
-  if (fs.existsSync(skillsDir)) {
-    const skillIndex: string[] = ['## Available Skills'];
-    const promptLower = containerInput.prompt.toLowerCase();
-
-    for (const entry of fs.readdirSync(skillsDir)) {
-      const skillMd = path.join(skillsDir, entry, 'SKILL.md');
-      if (!fs.existsSync(skillMd)) continue;
-
-      const content = fs.readFileSync(skillMd, 'utf-8');
-      // Parse frontmatter name and description
-      const nameMatch = content.match(/^name:\s*(.+)$/m);
-      const descMatch = content.match(/^description:\s*(.+)$/m);
-      const name = nameMatch?.[1]?.trim() || entry;
-      const desc = descMatch?.[1]?.trim() || '';
-
-      skillIndex.push(`- **/${name}** — ${desc}`);
-
-      // Inject full content if the prompt references this skill
-      const triggers = [
-        `/${name}`,
-        `/${entry}`,
-        name.replace(/-/g, ' '),
-        entry.replace(/-/g, ' '),
-      ];
-      const isRelevant = triggers.some((t) => promptLower.includes(t.toLowerCase()));
-      if (isRelevant) {
-        agentsParts.push(`## Skill: /${name}\n\n${content}`);
-        log(`Pre-injected skill: ${name}`);
-      }
-    }
-
-    agentsParts.push(skillIndex.join('\n'));
-  }
 
   if (agentsParts.length > 0) {
     fs.writeFileSync(
@@ -140,284 +390,310 @@ async function runCodexQuery(
     );
     log(`Assembled AGENTS.md from ${agentsParts.length} source(s)`);
   }
+}
 
-  // Write MCP server config for Codex.
-  // Strip all [mcp_servers.*] from any existing config and rewrite fresh.
-  // This prevents stale/duplicate MCP blocks from crashing Codex.
-  const codexConfigDir = path.join(
-    process.env.HOME || '/home/node',
-    '.codex',
-  );
-  fs.mkdirSync(codexConfigDir, { recursive: true });
-  const configTomlPath = path.join(codexConfigDir, 'config.toml');
+// ---------------------------------------------------------------------------
+// Main query handler
+// ---------------------------------------------------------------------------
 
-  // Preserve non-MCP settings (plugins, features, projects, sandbox)
-  let baseConfig = '';
-  if (fs.existsSync(configTomlPath)) {
-    const existing = fs.readFileSync(configTomlPath, 'utf-8');
-    // Keep everything before the first [mcp_servers section
-    const mcpIdx = existing.indexOf('[mcp_servers');
-    baseConfig = mcpIdx !== -1 ? existing.slice(0, mcpIdx).trimEnd() : existing.trimEnd();
+async function runCodexQuery(
+  prompt: string,
+  sessionId: string | undefined,
+  mcpServerPath: string,
+  containerInput: ContainerInput,
+): Promise<QueryResult> {
+  const modelRef = getContainerModel(containerInput, 'gpt-5.4-mini');
+  const baseUrl = getContainerBaseUrl(containerInput) || process.env.OPENAI_BASE_URL;
+
+  // Assemble AGENTS.md — persona + tool guidance only.
+  // Skills are discovered natively by the app-server via skills/list.
+  assembleAgentsMd();
+
+  // Build config overrides (replaces config.toml)
+  const configOverrides: string[] = [
+    'features.use_linux_sandbox_bwrap=false',
+  ];
+  if (baseUrl) {
+    configOverrides.push(`model_provider_base_url="${baseUrl}"`);
   }
 
-  // Ensure sandbox settings exist
-  if (!baseConfig.includes('[features]')) {
-    baseConfig += `\n\n# Disable bwrap sandbox — container is already sandboxed by Docker\n[features]\nuse_linux_sandbox_bwrap = false\n\n[sandbox_workspace_write]\nnetwork_access = true`;
-  }
+  // Build MCP server configs and write config.toml
+  // The app-server reads config.toml for MCP server definitions.
+  // We write a minimal file with just MCP config — everything else
+  // goes via -c flags to avoid the config.toml corruption bugs.
+  const mcpServers = buildMcpConfig(mcpServerPath, containerInput, modelRef);
+  writeMcpConfigToml(mcpServers);
 
-  // Build fresh MCP server config
-  const mcpConfig = `
-[mcp_servers.nanoclaw]
-type = "stdio"
-command = "node"
-args = ["${mcpServerPath}"]
-[mcp_servers.nanoclaw.env]
-NANOCLAW_CHAT_JID = "${containerInput.chatJid}"
-NANOCLAW_GROUP_FOLDER = "${containerInput.groupFolder}"
-NANOCLAW_IS_MAIN = "${containerInput.isMain ? '1' : '0'}"
-NANOCLAW_RUNTIME = "codex"
-NANOCLAW_MODEL = "${modelRef}"
-`;
+  // Spawn the app-server
+  const server = spawnAppServer(configOverrides);
 
-  // Provider-based MCP servers (MS365, etc.)
-  const providerToml = getProviderCodexToml();
+  // Wire up auto-approval
+  server.serverRequestHandlers.push((req) => handleServerRequest(server, req));
 
-  fs.writeFileSync(
-    configTomlPath,
-    baseConfig + '\n\n' + mcpConfig + (providerToml ? '\n' + providerToml + '\n' : ''),
-  );
-  log('Wrote MCP config to Codex config.toml (clean rebuild)');
-
-  // Discover additional directories (Fix #3)
-  const extraDirs: string[] = [];
-  const extraBase = '/workspace/extra';
-  if (fs.existsSync(extraBase)) {
-    for (const entry of fs.readdirSync(extraBase)) {
-      const fullPath = path.join(extraBase, entry);
-      if (fs.statSync(fullPath).isDirectory()) extraDirs.push(fullPath);
-    }
-  }
-  if (extraDirs.length > 0) {
-    log(`Additional directories: ${extraDirs.join(', ')}`);
-  }
-
-  const codex = new Codex({
-    apiKey: process.env.OPENAI_API_KEY,
-    baseUrl,
-    config: {
-      // Disable bwrap sandbox — container is already sandboxed by Docker
-      features: { use_linux_sandbox_bwrap: false },
-      sandbox_workspace_write: { network_access: true },
-    },
-  });
-
-  // ARCHITECTURE DECISION: sandboxMode is 'danger-full-access' because the
-  // Docker container IS the sandbox. The Codex inner sandbox (bubblewrap) is
-  // disabled since the container already restricts mounts, network, and UID.
-  // The host launcher (container-runner.ts) controls what's mounted and only
-  // applies seccomp=unconfined for Codex (needed for user namespaces).
-  // If NanoClaw becomes multi-tenant, enforce sandboxProfile here per group.
-  const threadOptions = {
-    model: modelRef,
-    workingDirectory: '/workspace/group',
-    sandboxMode: 'danger-full-access' as const,
-    networkAccessEnabled: true,
-    approvalPolicy: 'never' as const,
-    skipGitRepoCheck: true,
-    additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
-  };
-  log(`Codex sandbox profile: ${sandboxProfile}`);
-  // TODO: Enforce safe/operator at the container launch boundary instead of
-  // only carrying the profile through runtimeOptions into the runner.
-
-  // Auto-compaction: check if we should start fresh due to context size
-  const compactState = loadCompactState();
-  let compactedSessionId = sessionId;
-  let compactionSummary: string | null = null;
-
-  if (
-    sessionId &&
-    compactState.cumulativeInputTokens >= COMPACT_THRESHOLD &&
-    compactState.sessionId === sessionId
-  ) {
-    log(`Auto-compaction triggered (${compactState.cumulativeInputTokens} input tokens). Generating summary...`);
-    try {
-      // Ask the current thread for a summary before discarding it
-      const summaryThread = codex.resumeThread(sessionId, threadOptions);
-      const summaryTurn = await summaryThread.runStreamed(
-        'Summarize our conversation so far in 300 words. Focus on: what tasks were completed, what decisions were made, what the user is currently working on, and any pending items. Be concise and factual.',
-      );
-      for await (const event of summaryTurn.events) {
-        if (event.type === 'item.completed' && event.item.type === 'agent_message') {
-          compactionSummary = event.item.text;
-        }
-      }
-      log(`Compaction summary: ${compactionSummary?.length || 0} chars`);
-    } catch (err) {
-      log(`Failed to generate compaction summary: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    // Reset state — fresh session
-    compactedSessionId = undefined;
-    saveCompactState({ cumulativeInputTokens: 0 });
-  }
-
-  // Try resuming a previous thread if we have a session ID.
-  // Fall back to a fresh thread if resume fails (e.g. "no rollout found").
-  let thread;
-  if (compactedSessionId) {
-    try {
-      thread = codex.resumeThread(compactedSessionId, threadOptions);
-      log(`Resuming Codex thread: ${compactedSessionId}`);
-    } catch (err) {
-      log(`Resume failed (${err instanceof Error ? err.message : String(err)}), starting fresh thread`);
-      thread = codex.startThread(threadOptions);
-    }
-  } else {
-    thread = codex.startThread(threadOptions);
-  }
-
-  // If we just compacted, prepend the summary to the user's prompt
-  if (compactionSummary) {
-    prompt = `[CONTEXT FROM PREVIOUS SESSION]\n${compactionSummary}\n\n[NEW MESSAGE]\n${prompt}`;
-    log('Injected compaction summary into prompt');
-  }
-
+  let newThreadId: string | undefined;
   let closedDuringQuery = false;
-  let newSessionId: string | undefined;
-
-  let ipcPolling = true;
-  const pollIpc = () => {
-    if (!ipcPolling) return;
-    if (shouldClose()) {
-      closedDuringQuery = true;
-      ipcPolling = false;
-      return;
-    }
-    setTimeout(pollIpc, 500);
-  };
-  setTimeout(pollIpc, 500);
 
   try {
-    // Use streaming for progress visibility
-    const streamedTurn = await thread.runStreamed(prompt);
-    let resultText: string | null = null;
-    let usage: { input_tokens: number; output_tokens: number } | null = null;
+    // Step 1: Initialize
+    log('Sending initialize...');
+    const initResp = await sendRequest(server, 'initialize', {
+      clientInfo: { name: 'nanoclaw', version: '1.0.0' },
+      capabilities: { experimentalApi: false },
+    }, INIT_TIMEOUT_MS);
 
-    // Build rich archive from stream events (Fix #2)
-    const archiveMessages: ParsedMessage[] = [
-      { role: 'user', content: prompt },
-    ];
-    const toolCalls: string[] = [];
+    if (initResp.error) {
+      throw new Error(`Initialize failed: ${initResp.error.message}`);
+    }
+    log('Initialize successful');
 
-    for await (const event of streamedTurn.events) {
-      if (event.type === 'thread.started') {
-        newSessionId = event.thread_id;
-        log(`Codex thread: ${newSessionId} (new)`);
-      }
+    // Step 2: Start or resume thread
+    const agentsMdContent = fs.existsSync('/workspace/group/AGENTS.md')
+      ? fs.readFileSync('/workspace/group/AGENTS.md', 'utf-8')
+      : undefined;
 
-      // Log and capture tool activity
-      if (event.type === 'item.started') {
-        const item = event.item;
-        if (item.type === 'command_execution') {
-          log(`[tool] Running: ${item.command}`);
-          toolCalls.push(`$ ${item.command}`);
-        } else if (item.type === 'mcp_tool_call') {
-          log(`[tool] MCP: ${item.server}/${item.tool}`);
-          toolCalls.push(`MCP: ${item.server}/${item.tool}`);
-        } else if (item.type === 'web_search') {
-          log(`[tool] Web search: ${item.query}`);
-          toolCalls.push(`Search: ${item.query}`);
-        } else if (item.type === 'file_change') {
-          const paths = item.changes.map((c: { path: string }) => c.path).join(', ');
-          log(`[tool] File changes: ${paths}`);
-          toolCalls.push(`Files: ${paths}`);
-        }
-      }
+    const threadParams = {
+      model: modelRef,
+      cwd: '/workspace/group',
+      sandbox: 'danger-full-access' as const,
+      approvalPolicy: 'never' as const,
+      baseInstructions: agentsMdContent,
+    };
 
-      // Capture command output for archive
-      if (event.type === 'item.completed' && event.item.type === 'command_execution') {
-        const cmd = event.item;
-        if (cmd.aggregated_output) {
-          toolCalls.push(cmd.aggregated_output.slice(0, 500));
-        }
-      }
+    let threadId: string | undefined;
 
-      if (event.type === 'item.completed' && event.item.type === 'agent_message') {
-        resultText = event.item.text;
-      }
+    // Try resuming an existing thread
+    if (sessionId) {
+      log(`Resuming thread: ${sessionId}`);
+      const resumeResp = await sendRequest(server, 'thread/resume', {
+        threadId: sessionId,
+        ...threadParams,
+      });
 
-      if (event.type === 'turn.completed') {
-        usage = event.usage;
+      if (resumeResp.error) {
+        log(`Resume failed: ${resumeResp.error.message}. Starting fresh thread.`);
+      } else {
+        threadId = sessionId;
+        log(`Thread resumed: ${threadId}`);
       }
     }
 
-    if (!newSessionId) {
-      newSessionId = thread.id || undefined;
-    }
+    // Start fresh thread if resume failed or no sessionId
+    if (!threadId) {
+      log('Starting new thread...');
+      const startResp = await sendRequest(server, 'thread/start', threadParams);
 
-    if (usage) {
-      log(`Codex usage: ${usage.input_tokens} in, ${usage.output_tokens} out`);
-      // Track cumulative input tokens for auto-compaction
-      const updatedState = loadCompactState();
-      updatedState.cumulativeInputTokens += usage.input_tokens;
-      updatedState.sessionId = newSessionId;
-      saveCompactState(updatedState);
-      log(`Cumulative input tokens: ${updatedState.cumulativeInputTokens}/${COMPACT_THRESHOLD}`);
-    }
-
-    // Rich conversation archive (Fix #2)
-    if (resultText || toolCalls.length > 0) {
-      try {
-        if (toolCalls.length > 0) {
-          archiveMessages.push({
-            role: 'assistant',
-            content: `[Tool calls]\n${toolCalls.join('\n')}`,
-          });
-        }
-        if (resultText) {
-          archiveMessages.push({ role: 'assistant', content: resultText });
-        }
-
-        const conversationsDir = '/workspace/group/conversations';
-        fs.mkdirSync(conversationsDir, { recursive: true });
-        const date = new Date().toISOString().split('T')[0];
-        const name = sanitizeFilename(prompt.slice(0, 50).replace(/\n/g, ' '));
-        const filePath = path.join(conversationsDir, `${date}-${name || 'conversation'}.md`);
-        fs.writeFileSync(
-          filePath,
-          formatTranscriptMarkdown(
-            archiveMessages,
-            prompt.slice(0, 50),
-            containerInput.assistantName,
-          ),
-        );
-        log(`Archived Codex conversation to ${filePath}`);
-      } catch (err) {
-        log(`Failed to archive: ${err instanceof Error ? err.message : String(err)}`);
+      if (startResp.error) {
+        throw new Error(`thread/start failed: ${startResp.error.message}`);
       }
+
+      const result = startResp.result as { thread?: { id?: string } } | undefined;
+      threadId = result?.thread?.id;
+      if (!threadId) {
+        throw new Error('thread/start response missing thread ID');
+      }
+      log(`New thread started: ${threadId}`);
     }
 
-    writeOutput({ status: 'success', result: resultText, newSessionId });
+    newThreadId = threadId;
 
-    // Check for IPC messages that arrived during this turn (Fix #1)
-    // Feed them as a follow-up turn so the user's mid-turn messages
-    // get processed immediately instead of waiting for next container cycle.
+    // Step 3: Send the turn
+    log('Starting turn...');
+
+    // Collect streaming output — mutable state shared with notification handlers.
+    // Using an object so TypeScript doesn't narrow closure-captured vars to `never`.
+    const turnState = {
+      resultText: '',
+      toolCalls: [] as string[],
+      turnComplete: false,
+      totalInputTokens: 0,
+    };
+
+    // Set up notification handlers for this turn
+    const turnPromise = new Promise<void>((resolve, reject) => {
+      const turnTimeout = setTimeout(() => {
+        reject(new Error(`Turn timed out after ${TURN_TIMEOUT_MS}ms`));
+      }, TURN_TIMEOUT_MS);
+
+      server.notificationHandlers.push((notification) => {
+        const method = notification.method;
+        const params = notification.params;
+
+        switch (method) {
+          case 'thread/started': {
+            const thread = params.thread as { id?: string } | undefined;
+            if (thread?.id) {
+              newThreadId = thread.id;
+              log(`Thread started: ${newThreadId}`);
+            }
+            break;
+          }
+
+          case 'item/agentMessage/delta': {
+            const delta = params.delta as string;
+            if (delta) turnState.resultText += delta;
+            break;
+          }
+
+          case 'item/started': {
+            const item = params.item as { type?: string; command?: string; server?: string; tool?: string; query?: string; changes?: { path: string }[] } | undefined;
+            if (!item) break;
+
+            if (item.type === 'commandExecution' && item.command) {
+              log(`[tool] Running: ${item.command}`);
+              turnState.toolCalls.push(`$ ${item.command}`);
+            } else if (item.type === 'mcpToolCall' && item.server && item.tool) {
+              log(`[tool] MCP: ${item.server}/${item.tool}`);
+              turnState.toolCalls.push(`MCP: ${item.server}/${item.tool}`);
+            } else if (item.type === 'webSearch' && item.query) {
+              log(`[tool] Web search: ${item.query}`);
+              turnState.toolCalls.push(`Search: ${item.query}`);
+            } else if (item.type === 'fileChange' && item.changes) {
+              const paths = item.changes.map((c) => c.path).join(', ');
+              log(`[tool] File changes: ${paths}`);
+              turnState.toolCalls.push(`Files: ${paths}`);
+            }
+            break;
+          }
+
+          case 'item/completed': {
+            const item = params.item as { type?: string; aggregated_output?: string; text?: string } | undefined;
+            if (item?.type === 'commandExecution' && item.aggregated_output) {
+              turnState.toolCalls.push(item.aggregated_output.slice(0, 500));
+            }
+            // Capture final message text from completed agentMessage items
+            if (item?.type === 'agentMessage' && item.text) {
+              turnState.resultText = item.text;
+            }
+            break;
+          }
+
+          case 'item/commandExecution/outputDelta':
+            // Streaming command output — log but don't append to result
+            break;
+
+          case 'thread/tokenUsage/updated': {
+            // Server tracks cumulative totals — use directly for compaction decisions
+            const usage = params.tokenUsage as { total?: { inputTokens?: number; outputTokens?: number } } | undefined;
+            if (usage?.total) {
+              turnState.totalInputTokens = usage.total.inputTokens || 0;
+              log(`Token usage: ${usage.total.inputTokens} in, ${usage.total.outputTokens} out (total)`);
+            }
+            break;
+          }
+
+          case 'thread/compacted':
+            log('Thread compacted by server');
+            break;
+
+          case 'turn/started':
+            log('Turn started');
+            break;
+
+          case 'turn/completed': {
+            turnState.turnComplete = true;
+            clearTimeout(turnTimeout);
+            resolve();
+            break;
+          }
+
+          case 'thread/status/changed': {
+            const status = params.status as string | undefined;
+            log(`Thread status: ${status}`);
+            break;
+          }
+
+          // Ignore noisy notifications
+          case 'item/reasoning/summaryTextDelta':
+          case 'turn/diff/updated':
+          case 'turn/plan/updated':
+            break;
+
+          default:
+            // Log unknown notifications for debugging
+            if (!method.startsWith('item/')) {
+              log(`[notification] ${method}`);
+            }
+            break;
+        }
+      });
+    });
+
+    // Send turn/start
+    const turnResp = await sendRequest(server, 'turn/start', {
+      threadId,
+      input: [{ type: 'text', text: prompt }],
+      model: modelRef,
+      cwd: '/workspace/group',
+    });
+
+    if (turnResp.error) {
+      throw new Error(`turn/start failed: ${turnResp.error.message}`);
+    }
+
+    // Poll for IPC messages during the turn
+    let ipcPolling = true;
+    const pollIpc = () => {
+      if (!ipcPolling) return;
+      if (shouldClose()) {
+        closedDuringQuery = true;
+        ipcPolling = false;
+        return;
+      }
+      setTimeout(pollIpc, 500);
+    };
+    setTimeout(pollIpc, 500);
+
+    // Wait for turn completion
+    await turnPromise;
     ipcPolling = false;
+
+    log(`Turn complete. Result: ${turnState.resultText.length} chars, ${turnState.toolCalls.length} tool calls`);
+
+    // Trigger native compaction if cumulative tokens exceed threshold.
+    // The server tracks totals via thread/tokenUsage/updated — no local state file needed.
+    if (turnState.totalInputTokens >= COMPACT_THRESHOLD) {
+      log(`Compaction threshold reached (${turnState.totalInputTokens}/${COMPACT_THRESHOLD} tokens). Compacting...`);
+      const compactResp = await sendRequest(server, 'thread/compact/start', {
+        threadId: newThreadId,
+      });
+      if (compactResp.error) {
+        log(`Compaction failed: ${compactResp.error.message}. Continuing uncompacted.`);
+      } else {
+        log('Native compaction completed');
+      }
+    }
+
+    writeOutput({ status: 'success', result: turnState.resultText || null, newSessionId: newThreadId });
+
+    // Process IPC messages that arrived during the turn
     const pendingMessages = drainIpcInput();
     if (pendingMessages.length > 0 && !closedDuringQuery) {
       log(`Processing ${pendingMessages.length} IPC message(s) that arrived during turn`);
       const followUp = pendingMessages.join('\n');
-      const followUpTurn = await thread.runStreamed(followUp);
-      let followUpResult: string | null = null;
 
-      for await (const event of followUpTurn.events) {
-        if (event.type === 'item.completed' && event.item.type === 'agent_message') {
-          followUpResult = event.item.text;
+      // Reset streaming state for follow-up
+      turnState.resultText = '';
+      turnState.turnComplete = false;
+
+      const followUpTurnPromise = new Promise<void>((resolve) => {
+        const checkComplete = () => {
+          if (turnState.turnComplete) { resolve(); return; }
+          setTimeout(checkComplete, 100);
+        };
+        setTimeout(checkComplete, 100);
+      });
+
+      const followUpResp = await sendRequest(server, 'turn/start', {
+        threadId: newThreadId,
+        input: [{ type: 'text', text: followUp }],
+        model: modelRef,
+      });
+
+      if (!followUpResp.error) {
+        await followUpTurnPromise;
+        if (turnState.resultText) {
+          writeOutput({ status: 'success', result: turnState.resultText, newSessionId: newThreadId });
         }
-      }
-
-      if (followUpResult) {
-        writeOutput({ status: 'success', result: followUpResult, newSessionId });
       }
     }
   } catch (err) {
@@ -426,13 +702,14 @@ NANOCLAW_MODEL = "${modelRef}"
     writeOutput({
       status: 'error',
       result: null,
-      newSessionId: newSessionId || thread.id || undefined,
+      newSessionId: newThreadId,
       error,
     });
+  } finally {
+    killServer(server);
   }
 
-  ipcPolling = false;
-  return { newSessionId, closedDuringQuery };
+  return { newSessionId: newThreadId, closedDuringQuery };
 }
 
 // --- Self-register ---
