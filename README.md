@@ -197,7 +197,6 @@ Run `/setup` inside the CLI. It handles everything: dependencies, container runt
 - **Delegation** — Claude supports native team orchestration, Gemini ADK supports native sub-agents, and Codex uses app-server worker-thread delegation. These are exposed honestly as runtime-specific capabilities, not forced into one fake shared abstraction.
 - **Skills system** — Add capabilities with `/add-*` skills. All SDKs load skills on-demand from their respective directories.
 - **Provider plugins** — External services (MS365, Google Workspace, IMAP) are described as JSON config files — add or remove a provider without code changes. Token paths, MCP servers, allowed tools, and init hooks are declared in config, while the host still decides which containers may receive provider tokens. Providers are definitions only — run `/add-email-account` to authenticate and activate.
-- **Email management** — Register email accounts (`/add-email-account`), calibrate sender rules (`/add-email-archive`), and batch-classify emails toward inbox zero (`/email-archive`). Provider-agnostic — works with any configured email account.
 
 ## Usage
 

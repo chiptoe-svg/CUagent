@@ -206,7 +206,7 @@ async function runClaudeQuery(
     }
   }
   // Provider docs (MS365, GWS usage instructions) are NOT injected globally.
-  // They live in the skills that use them (/email-archive, /add-email-account).
+  // They live in provider-aware skills such as /add-email-account.
 
   const extraDirs: string[] = [];
   const extraBase = '/workspace/extra';

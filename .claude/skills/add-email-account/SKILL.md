@@ -1,11 +1,11 @@
 ---
 name: add-email-account
-description: Register an email account for use by email skills (archive, triage, etc.). Supports Google Workspace (Gmail), Microsoft 365 (Outlook/Exchange), and IMAP. Handles authentication and stores account config. Run /add-email-account to add or manage accounts.
+description: Register an email account for provider-aware skills and downstream workflows. Supports Google Workspace (Gmail), Microsoft 365 (Outlook/Exchange), and IMAP. Handles authentication and stores account config. Run /add-email-account to add or manage accounts.
 ---
 
 # Add Email Account
 
-Register email accounts that other skills (`/email-archive`, `/email-triage`, etc.) can use. Each account has a provider type, credentials, and a verified connection.
+Register email accounts that other provider-aware skills and downstream workflows can use. Each account has a provider type, credentials, and a verified connection.
 
 ## Detect Group
 
@@ -245,7 +245,7 @@ Write or update `groups/${MAIN_FOLDER}/email-accounts.yaml`:
 
 ```yaml
 # Registered email accounts
-# Used by: /email-archive, /email-triage, and other email skills
+# Used by: provider-aware skills and downstream workflows
 # Provider types: gws, ms365, imap
 
 accounts:
@@ -268,9 +268,7 @@ If the file already exists, append the new account (don't overwrite existing ent
 
 > Account `ACCOUNT_ID` registered (TYPE — ADDRESS).
 >
-> This account is now available to email skills:
-> - `/add-email-archive` — bulk sort old emails toward inbox zero
-> - `/email-triage` — daily inbox management (coming soon)
+> This account is now available to provider-aware skills and downstream workflows.
 >
 > Add another account? Or type **done** to finish.
 
@@ -302,7 +300,7 @@ For `ms365` accounts, also read the `--enabled-tools` regex from `container/prov
 
 ## Provider Operations Reference
 
-This is the canonical reference for email operations by provider type. Other skills (`/email-archive`, `/email-triage`) should reference this.
+This is the canonical reference for email operations by provider type. Other provider-aware skills and downstream workflows should reference this.
 
 ### Type: `gws` (Google Workspace)
 
