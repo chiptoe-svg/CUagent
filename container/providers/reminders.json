@@ -14,7 +14,7 @@
 
   "mcp": {
     "command": "node",
-    "args": ["/app/src/mcp-reminders.js"],
+    "args": ["/tmp/dist/mcp-reminders.js"],
     "env": {
       "REMINDERS_HOST": "${env.REMINDERS_HOST}",
       "REMINDERS_POLL_INTERVAL": "${env.REMINDERS_POLL_INTERVAL}"
