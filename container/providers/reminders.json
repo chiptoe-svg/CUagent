@@ -1,0 +1,34 @@
+{
+  "id": "reminders",
+  "name": "Apple Reminders",
+  "description": "Create, list, complete, and update Apple Reminders. Backed by a Swift HTTP app on the host (Mac mini) that bridges to EventKit. iCloud syncs to iPhone/iPad Reminders.app. Pull-only in v1 — see docs/apple-reminders-mcp.md.",
+
+  "tokenPaths": {
+    "host": "~/.nanoclaw/.reminders",
+    "container": "/workspace/.reminders",
+    "readonly": true,
+    "requiredFile": "enabled"
+  },
+
+  "containerEnv": ["REMINDERS_HOST", "REMINDERS_POLL_INTERVAL"],
+
+  "mcp": {
+    "command": "node",
+    "args": ["/tmp/dist/mcp-reminders.js"],
+    "env": {
+      "REMINDERS_HOST": "${env.REMINDERS_HOST}",
+      "REMINDERS_POLL_INTERVAL": "${env.REMINDERS_POLL_INTERVAL}"
+    }
+  },
+
+  "allowedTools": ["mcp__reminders__*"],
+
+  "init": null,
+
+  "agentDocs": "## Apple Reminders\n\nYou have MCP tools prefixed with `mcp__reminders__` for the user's Apple Reminders. Reminders sync to the user's iPhone via iCloud — treat them as the canonical to-do / reminder surface. Prefer `reminder_*` over any file-backed todo tool.\n\n**When the user says \"remind me\" — with or without a time — they almost always want an iOS reminder on their phone, not a scheduled agent task.** Use `reminder_create` (with `alert` or `alert_before_due` when a time is given) rather than `mcp__nanoclaw__schedule_task`. Only reach for `schedule_task` when the user explicitly wants the agent itself to run autonomously at a given time (e.g. \"every morning, summarize my inbox\" or \"ping me tomorrow once the build completes\").\n\nCore operations:\n- `reminder_list_available` — enumerate existing reminder lists. Call this before routing new items into an unfamiliar list.\n- `reminder_list_create` — create a new list. Only use when the user has explicitly asked for one; routine item adds go into existing lists.\n- `reminder_create` — create a reminder. Supply `list` by name or id; optionally `parent_id` for a subtask; optionally `alert` (absolute) or `alert_before_due` (relative) to trigger an iOS notification at a specific time.\n- `reminder_list` — query pending, completed, or recently-completed reminders. Subtasks render indented under parents. Use `status: \"recently_completed\"` for reconciliation.\n- `reminder_complete` / `reminder_uncomplete` / `reminder_update` / `reminder_delete` — self-explanatory. `reminder_update` accepts the same fields as `reminder_create`.\n\nConventions:\n- Store the `id` returned from `reminder_create` alongside any workflow state (email-triage, scheduled follow-up) that references the reminder.\n- For email-triage reminders, put the email metadata (message id, account, sender, subject, proposed folder) in `notes` as JSON.\n- Set `alert` (or `alert_before_due`) when the user says \"remind me at X\" — without an alarm, iOS won't actively notify; the reminder sits silently until they open the app.\n- **Subtasks are not yet supported.** The schema accepts `parent_id` for forward compatibility, but v1 returns `subtasks_unsupported` if you set it. Create flat reminders for now; encode structure in `notes` (e.g. \"Step 1 of 3: draft agenda\") if you need grouping.\n- Treat `host_unreachable` / `eventkit_denied` as soft failures — tell the user what's wrong, don't retry silently.\n- If `list_not_found` fires, call `reminder_list_available` to pick an existing list or `reminder_list_create` to make a new one. Don't invent list names.",
+
+  "auth": {
+    "loginCommand": "bash $(npm prefix)/scripts/reminders-host/install.sh",
+    "description": "Builds and installs the host Swift app under launchd, grants EventKit permission via first-run dialog, then writes a sentinel file at ~/.nanoclaw/.reminders/enabled to activate the provider."
+  }
+}
