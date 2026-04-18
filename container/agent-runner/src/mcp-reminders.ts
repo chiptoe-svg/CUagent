@@ -15,7 +15,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const HOST = process.env.REMINDERS_HOST || 'http://host.docker.internal:3002';
+import { hostFetch as rawHostFetch, remindersHost } from './host-fetch.js';
+
+const HOST = remindersHost();
+
+function hostFetch<T>(path: string, init?: RequestInit): Promise<T | null> {
+  return rawHostFetch<T>(HOST, path, init);
+}
 
 interface ListInfo {
   id: string;
@@ -37,38 +43,6 @@ interface ReminderInfo {
   parentId: string | null;
   alert: string | null;
   alertBeforeDue: string | null;
-}
-
-async function hostFetch<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T | null> {
-  let res: Response;
-  try {
-    res = await fetch(`${HOST}${path}`, {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init?.headers || {}),
-      },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `host_unreachable: could not reach ${HOST} — ${msg}. Is reminders-host running on the Mac?`,
-    );
-  }
-  const text = await res.text();
-  if (!res.ok) {
-    try {
-      const parsed = JSON.parse(text) as { code?: string; message?: string };
-      if (parsed.code) throw new Error(`${parsed.code}: ${parsed.message || '(no detail)'}`);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes(':')) throw err;
-    }
-    throw new Error(`HTTP ${res.status}: ${text || '(empty body)'}`);
-  }
-  return text ? (JSON.parse(text) as T) : null;
 }
 
 function ok(text: string) {

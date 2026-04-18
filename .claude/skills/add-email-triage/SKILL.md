@@ -1,15 +1,22 @@
 ---
 name: add-email-triage
-description: Set up email triage — hourly inbox scanning that creates todo items for actionable emails. Filing happens when todos are completed. Requires email accounts (/add-email-account) and archive config (/add-email-archive) to be set up first.
+description: Set up email triage — hourly inbox scanning that creates Apple Reminders for actionable emails. Filing happens when reminders are completed. Requires email accounts (/add-email-account), archive config (/add-email-archive), and the Apple Reminders host service installed (see docs/apple-reminders-mcp.md).
 ---
 
 # Add Email Triage
 
-Interactive setup for the email triage system. Configures hourly inbox scanning that identifies actionable emails and creates todo items for them.
+Interactive setup for the email triage system. Configures hourly inbox scanning that identifies actionable emails and creates a reminder for each one. When the user checks off a reminder (on any device — iPhone, Reminders.app, etc.), the scheduler's reconciliation poll picks it up and files the associated email.
 
 **Prerequisites:**
 - At least one email account registered (run `/add-email-account`)
 - Email archive configured with taxonomy and rules (run `/add-email-archive`)
+- Apple Reminders MCP installed and the host service running — see `docs/apple-reminders-mcp.md`. If the host is unreachable the legacy file-backed `todo_*` tools keep triage alive as a fallback, but existing open `todos.json` items should be migrated with `todo_migrate_to_reminders` once the host is up.
+
+## Tool surface (post-migration)
+
+Email triage writes actionable items via `mcp__reminders__reminder_create` into a dedicated list (default: "Email Actions"). Each reminder's `notes` field stores the email metadata as JSON — message id, account, sender, subject, proposed folder — so the filing step has everything it needs without re-querying the inbox.
+
+The older `todo_create` / `todo_list` / `todo_complete` / `todo_delete` tools still work but emit deprecation warnings. New installs should use the `reminder_*` surface exclusively; pre-existing installs should run `todo_migrate_to_reminders` once after standing up the host service.
 
 ## Phase 1: Prerequisites
 

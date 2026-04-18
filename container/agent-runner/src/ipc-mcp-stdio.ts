@@ -503,9 +503,21 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
-// --- Todo list tools ---
+// --- Todo list tools (DEPRECATED) ---
 // Simple file-backed todo list. Stored as JSON in the group folder.
-// Used by email triage and general agent tasks. Will be replaced by Apple Reminders (Phase 7).
+// SUPERSEDED by the reminders MCP (mcp__reminders__reminder_*) which writes to
+// Apple Reminders via the host-side Swift app and syncs to iPhone via iCloud.
+//
+// Kept alive as a fallback when the reminders provider isn't installed or the
+// Mac mini's host service is unreachable. Each mutating tool logs a deprecation
+// warning on use; the one-shot todo_migrate_to_reminders tool moves existing
+// items into Apple Reminders.
+//
+// Removal target: after all active deployments have migrated and at least one
+// release with the deprecation warnings has shipped.
+
+const DEPRECATION_NOTICE =
+  '[deprecated] todo_* tools are superseded by mcp__reminders__reminder_*. Run todo_migrate_to_reminders to move existing items, then prefer the reminders tools going forward.';
 
 const TODO_FILE = path.join('/workspace/group', 'todos.json');
 
@@ -545,6 +557,7 @@ server.tool(
     list: z.string().default('General').describe('List name (e.g., "Email Actions", "General")'),
   },
   async (args) => {
+    console.warn(DEPRECATION_NOTICE);
     const todos = readTodos();
     const item: TodoItem = {
       id: `todo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -572,6 +585,7 @@ server.tool(
     include_notes: z.boolean().default(false).describe('Include notes field in output'),
   },
   async (args) => {
+    console.warn(DEPRECATION_NOTICE);
     let todos = readTodos();
     if (args.list) {
       todos = todos.filter(t => t.list === args.list);
@@ -638,6 +652,7 @@ server.tool(
     id: z.string().describe('The todo item ID'),
   },
   async (args) => {
+    console.warn(DEPRECATION_NOTICE);
     const todos = readTodos();
     const item = todos.find(t => t.id === args.id);
     if (!item) {
@@ -660,6 +675,7 @@ server.tool(
     id: z.string().describe('The todo item ID'),
   },
   async (args) => {
+    console.warn(DEPRECATION_NOTICE);
     const todos = readTodos();
     const idx = todos.findIndex(t => t.id === args.id);
     if (idx === -1) {
@@ -668,6 +684,77 @@ server.tool(
     const removed = todos.splice(idx, 1)[0];
     writeTodos(todos);
     return { content: [{ type: 'text' as const, text: `Deleted: "${removed.title}"` }] };
+  },
+);
+
+// --- One-shot todo → reminders migration ----------------------------------
+
+import { hostFetch, remindersHost } from './host-fetch.js';
+
+server.tool(
+  'todo_migrate_to_reminders',
+  'One-shot migration: move every open item in the file-backed todo list into Apple Reminders. Completed items are skipped. The todos file is renamed to todos.json.migrated when the migration finishes cleanly. Safe to re-run — if it runs again after a successful migration there will be no open items to move. Requires the reminders host service to be reachable.',
+  {
+    list: z.string().optional().describe('Apple Reminders list to write into (name or id). Defaults to the user\'s default list. Falls back to per-todo t.list when set on the original item.'),
+    dry_run: z.boolean().default(false).describe('When true, report what would be migrated without creating reminders or archiving the file.'),
+  },
+  async (args) => {
+    const todos = readTodos();
+    const open = todos.filter(t => !t.completed);
+    if (open.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No open todos to migrate.' }] };
+    }
+
+    const HOST = remindersHost();
+    const results: string[] = [];
+    let created = 0;
+    let failed = 0;
+
+    for (const t of open) {
+      const targetList = args.list || t.list || undefined;
+      if (args.dry_run) {
+        results.push(`would migrate: ${t.id} → "${t.title}"${targetList ? ` (list: ${targetList})` : ''}`);
+        continue;
+      }
+      try {
+        const body = {
+          title: t.title,
+          notes: t.notes || undefined,
+          due: t.due || undefined,
+          priority: t.priority,
+          list: targetList,
+        };
+        const r = await hostFetch<{ id: string }>(HOST, '/reminders', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        created += 1;
+        results.push(`migrated: ${t.id} → reminder ${r?.id ?? '(unknown id)'}`);
+      } catch (err) {
+        failed += 1;
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push(`FAILED: ${t.id} — ${msg}`);
+      }
+    }
+
+    if (!args.dry_run && failed === 0 && created > 0) {
+      // Archive the todos file so the next run is a no-op.
+      try {
+        fs.renameSync(TODO_FILE, `${TODO_FILE}.migrated`);
+        results.push(`archived ${TODO_FILE} → ${TODO_FILE}.migrated`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push(`WARNING: migration succeeded but failed to archive todos file — ${msg}`);
+      }
+    }
+
+    const header = args.dry_run
+      ? `Dry run: ${open.length} open todo(s) would be migrated.`
+      : `Migrated ${created}/${open.length} open todo(s). Failed: ${failed}.`;
+    return {
+      content: [{ type: 'text' as const, text: `${header}\n\n${results.join('\n')}` }],
+      isError: failed > 0,
+    };
   },
 );
 

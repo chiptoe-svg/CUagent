@@ -1,11 +1,11 @@
 ---
 name: email-triage
-description: Scan inbox for actionable emails, create todo items for things needing response or action, and file emails when todos are completed. Use /email-triage to scan now, /email-triage status for pending items.
+description: Scan inbox for actionable emails, create Apple Reminders for things needing response or action, and file emails when reminders are completed. Use /email-triage to scan now, /email-triage status for pending items.
 ---
 
 # /email-triage — Email Triage
 
-Scan inbox emails, identify actionable items, create todos. Filing happens when the todo is completed.
+Scan inbox emails, identify actionable items, create Apple Reminders for them. Filing happens when the reminder is completed — either by the agent on user request ("mark it done") or by the user tap-completing on their iPhone (picked up by the scheduler's reconciliation poll).
 
 ## Modes
 
@@ -77,19 +77,20 @@ cat /workspace/group/email-accounts.yaml
       - Assess: does this need a response or action from the user?
 
    c. **Decision:**
-      - **Clearly actionable** → create todo (step 4)
+      - **Clearly actionable** → create reminder (step 4)
       - **Uncertain** → add to uncertain list (reported in summary for user to decide)
       - **Clearly not actionable** → skip (leave in inbox)
 
-4. **Create todo** for actionable emails via `mcp__nanoclaw__todo_create`:
+4. **Create a reminder** for actionable emails via `mcp__reminders__reminder_create`:
    - `title`: concise action (e.g., "Reply to Dr. Smith re: budget meeting")
-   - `notes`: JSON with email metadata:
+   - `notes`: JSON with email metadata (same convention as the legacy todo path):
      ```json
      {"email_id": "MSG_ID", "account": "gmail", "from": "smith@clemson.edu", "subject": "Budget meeting", "folder": "Sorted/Work"}
      ```
    - `due`: extracted from email content if present (e.g., "by Friday", "due April 18", "deadline tomorrow"), otherwise next business day (skip weekends — Friday defaults to Monday, Saturday/Sunday default to Monday)
-   - `priority`: high if urgent signals, medium otherwise
-   - `list`: "Email Actions"
+   - `priority`: `high` if urgent signals, `medium` otherwise
+   - `list`: `"Email Actions"` — call `mcp__reminders__reminder_list_available` once at setup time to confirm it exists; if not, use `mcp__reminders__reminder_list_create` to make it
+   - If the host service returns `host_unreachable` or `eventkit_denied`, fall back to the legacy `mcp__nanoclaw__todo_create` so triage keeps working, and surface the underlying error to the user so they can fix the Reminders host
 
 5. **Update state** — save `last_scan_date` per account
 
@@ -101,11 +102,11 @@ cat /workspace/group/email-accounts.yaml
    New action items: N
    Skipped (known non-actionable): N
 
-   Uncertain — want todos for any of these?
+   Uncertain — want reminders for any of these?
    • "Re: Q3 budget projections" from jane@clemson.edu
    • "Meeting notes from Tuesday" from dept-list@clemson.edu
 
-   Pending todos: N total (N overdue)
+   Pending reminders: N total (N overdue)
 
    View all: /email-triage status
    ```
@@ -114,13 +115,18 @@ cat /workspace/group/email-accounts.yaml
 
 ## File Mode
 
-When the user says something like "mark the Smith email as done" or `/email-triage file <todo-id>`:
+When the user says something like "mark the Smith email as done" or `/email-triage file <reminder-id>`, or when the scheduler's reconciliation poll detects that the user completed a reminder on their iPhone (via `mcp__reminders__reminder_list` with `status: "recently_completed"`):
 
-1. **Find the todo** via `mcp__nanoclaw__todo_list` (list: "Email Actions", include_notes: true)
+1. **Find the reminder** via `mcp__reminders__reminder_list` (list: "Email Actions", include_notes: true); filter to the target id if invoked manually
 2. **Parse notes** to get email_id, account, and proposed folder
 3. **Move the email** to the folder:
 
-   **gws:**
+   **gws_mcp** (preferred — structured MCP tools):
+   ```
+   Call mcp__gws_mcp__move_gmail_message (or similar) with the message ID and destination label.
+   ```
+
+   **gws** (legacy CLI fallback):
    ```bash
    GWS_CREDENTIAL_STORE=plaintext gws gmail users messages modify --params '{"id":"MSG_ID"}' --json '{"addLabelIds":["LABEL_ID"],"removeLabelIds":["INBOX"]}'
    ```
@@ -132,16 +138,16 @@ When the user says something like "mark the Smith email as done" or `/email-tria
 
    Look up folder/label IDs from `email-archive/config.yaml` (`archive_accounts[].folder_ids`).
 
-4. **Complete the todo** via `mcp__nanoclaw__todo_complete`
+4. **Mark the reminder complete** via `mcp__reminders__reminder_complete` (skip this if the user is the one who tap-completed it on their phone — it's already complete)
 5. **Log the filing** — append to `email-triage/state/filed.jsonl`:
    ```json
-   {"timestamp": "ISO", "email_id": "...", "account": "...", "folder": "...", "todo_id": "..."}
+   {"timestamp": "ISO", "email_id": "...", "account": "...", "folder": "...", "reminder_id": "..."}
    ```
-6. **Confirm**: "Filed 'Budget meeting' → Sorted/Work. Todo completed."
+6. **Confirm**: "Filed 'Budget meeting' → Sorted/Work. Reminder completed."
 
 ## Status Mode
 
-1. **List pending todos** via `mcp__nanoclaw__todo_list` (list: "Email Actions", status: "pending")
+1. **List pending reminders** via `mcp__reminders__reminder_list` (list: "Email Actions", status: "pending")
 2. **Read state** for scan stats
 3. **Report:**
 
@@ -164,7 +170,7 @@ When the user says something like "mark the Smith email as done" or `/email-tria
 
 - **Triage NEVER auto-files emails** — only on explicit todo completion
 - **Non-actionable emails stay in inbox** — handled by `/email-archive` runs
-- **Agent can complete todos** when the user instructs (e.g., "mark it done", "I replied to Smith")
+- **Agent can complete reminders** when the user instructs (e.g., "mark it done", "I replied to Smith"). The agent can also leave the reminder alone and wait for the user to tap-complete on their iPhone — the reconciliation poll will catch it.
 - **NEVER auto-delete emails**
 - **NEVER send emails** on the user's behalf without explicit instruction
 - **Provider-agnostic** — all email operations use provider reference from `/add-email-account`
