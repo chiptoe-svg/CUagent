@@ -45,3 +45,8 @@ ios/**/*.xcuserstate
 ios/**/*.xcuserdatad/
 ios/**/xcuserdata/
 ios/**/DerivedData/
+
+# Swift Package Manager build artifacts
+scripts/reminders-host/.build/
+scripts/reminders-host/.swiftpm/
+scripts/reminders-host/Package.resolved
