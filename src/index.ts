@@ -70,7 +70,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
-import { startMs365Reconciler } from './ms365-reconciler.js';
+import { fetchOpenTasks, startMs365Reconciler } from './ms365-reconciler.js';
 import { startSessionCleanup } from './session-cleanup.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -764,6 +764,60 @@ async function main(): Promise<void> {
     await channel.sendMessage(chatJid, lines.join('\n'));
   }
 
+  // Handle /tasks — fetch open MS365 To Do tasks directly from Graph (no agent).
+  async function handleTasksCommand(chatJid: string): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) return;
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+
+    let tasks;
+    try {
+      tasks = await fetchOpenTasks();
+    } catch (err) {
+      logger.warn({ err, chatJid }, '/tasks: Graph fetch threw');
+      await channel.sendMessage(
+        chatJid,
+        'Could not reach Microsoft 365 — check connectivity or re-run `/auth`.',
+      );
+      return;
+    }
+
+    if (tasks === null) {
+      await channel.sendMessage(
+        chatJid,
+        'Microsoft 365 is not connected on this install, or the token has expired. Re-run `/auth` to reconnect.',
+      );
+      return;
+    }
+
+    if (tasks.length === 0) {
+      await channel.sendMessage(chatJid, 'No open tasks. 🎉');
+      return;
+    }
+
+    const now = Date.now();
+    const fmtDue = (d: Date | null): string => {
+      if (!d) return '';
+      const diffDays = Math.round((d.getTime() - now) / 86400_000);
+      const datePart = d.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+      });
+      if (diffDays < 0) return ` (due ${datePart}) ⚠️ OVERDUE`;
+      if (diffDays === 0) return ` (due today)`;
+      if (diffDays === 1) return ` (due tomorrow)`;
+      if (diffDays <= 7) return ` (due ${datePart})`;
+      return ` (due ${datePart})`;
+    };
+
+    const lines = [
+      `*MS365 Tasks* (${tasks.length})`,
+      ...tasks.map((t, i) => `#${i + 1} ${t.title}${fmtDue(t.dueDate)}`),
+    ];
+    await channel.sendMessage(chatJid, lines.join('\n'));
+  }
+
   // Handle /remote-control and /remote-control-end commands
   async function handleRemoteControl(
     command: string,
@@ -853,6 +907,13 @@ async function main(): Promise<void> {
       if (trimmed === '/info' || trimmed === '/session-info') {
         handleSessionInfo(chatJid).catch((err) =>
           logger.error({ err, chatJid }, 'Session info command error'),
+        );
+        return;
+      }
+
+      if (trimmed === '/tasks') {
+        handleTasksCommand(chatJid).catch((err) =>
+          logger.error({ err, chatJid }, 'Tasks command error'),
         );
         return;
       }

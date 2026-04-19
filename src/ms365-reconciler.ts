@@ -53,6 +53,16 @@ interface TodoTask {
   body?: { content?: string; contentType?: string };
   status: string;
   completedDateTime?: { dateTime: string; timeZone?: string };
+  dueDateTime?: { dateTime: string; timeZone?: string };
+  importance?: string;
+}
+
+export interface OpenTask {
+  id: string;
+  title: string;
+  dueDate: Date | null;
+  importance: string;
+  listName: string;
 }
 
 interface EmailMetadata {
@@ -189,6 +199,80 @@ async function fetchRecentlyCompleted(token: string): Promise<TodoTask[]> {
     }
   }
   return all;
+}
+
+/**
+ * Fetch open (non-completed) tasks from the user's default To Do list, sorted
+ * by due date: overdue → due soon → undated last. Used by the /tasks Telegram
+ * command for a fast host-side list without waking the agent.
+ */
+export async function fetchOpenTasks(): Promise<OpenTask[] | null> {
+  const token = await getAccessToken();
+  if (!token) return null;
+  const headers = { Authorization: `Bearer ${token}` };
+
+  let lists: Array<{
+    id: string;
+    displayName: string;
+    wellknownListName?: string;
+  }> = [];
+  try {
+    const r = await fetch('https://graph.microsoft.com/v1.0/me/todo/lists', {
+      headers,
+    });
+    if (!r.ok) return null;
+    lists =
+      (
+        (await r.json()) as {
+          value: Array<{
+            id: string;
+            displayName: string;
+            wellknownListName?: string;
+          }>;
+        }
+      ).value || [];
+  } catch {
+    return null;
+  }
+
+  // Prefer the Graph-flagged default list; fall back to one literally named "Tasks".
+  const defaultList =
+    lists.find((l) => l.wellknownListName === 'defaultList') ||
+    lists.find((l) => l.displayName === 'Tasks') ||
+    lists[0];
+  if (!defaultList) return [];
+
+  const raw: TodoTask[] = [];
+  try {
+    const url =
+      `https://graph.microsoft.com/v1.0/me/todo/lists/${defaultList.id}/tasks` +
+      `?$filter=${encodeURIComponent("status ne 'completed'")}&$top=100`;
+    const r = await fetch(url, { headers });
+    if (!r.ok) return null;
+    raw.push(...(((await r.json()) as { value: TodoTask[] }).value || []));
+  } catch {
+    return null;
+  }
+
+  const mapped: OpenTask[] = raw.map((t) => ({
+    id: t.id,
+    title: t.title,
+    dueDate: t.dueDateTime?.dateTime
+      ? new Date(t.dueDateTime.dateTime + 'Z')
+      : null,
+    importance: t.importance || 'normal',
+    listName: defaultList.displayName,
+  }));
+
+  // Overdue first, then by due-date asc, then undated, stable within groups.
+  mapped.sort((a, b) => {
+    if (a.dueDate && b.dueDate)
+      return a.dueDate.getTime() - b.dueDate.getTime();
+    if (a.dueDate) return -1;
+    if (b.dueDate) return 1;
+    return 0;
+  });
+  return mapped;
 }
 
 /**
