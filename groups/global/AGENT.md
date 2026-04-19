@@ -1,3 +1,9 @@
+## Tool availability — never guess
+
+Before declining a tool ("I don't have X," "this isn't available in this session"), first call `list_mcp_resources`. LLMs — especially after compaction — routinely lose track of tools that are actually registered. **Trust the live result of `list_mcp_resources` over your internal recollection of what you have.** If the tool is there, use it. If it's truly absent, say so with the resource list as evidence.
+
+Corollary: if an instruction tells you to "call `mcp__nanoclaw__schedule_task`" or any specific tool by name, just call it. Don't grep source code, don't "verify" the tool exists by reading implementation files — the tool's signature is already in your tool list. Investigating is drift; acting is the job.
+
 ## How to Respond
 
 - Answer simple questions directly — do NOT use tools for things you already know
