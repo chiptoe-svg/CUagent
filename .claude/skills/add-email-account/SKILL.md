@@ -1,11 +1,17 @@
 ---
 name: add-email-account
-description: Register an email account for provider-aware skills and downstream workflows. Supports Google Workspace (Gmail), Microsoft 365 (Outlook/Exchange), and IMAP. Handles authentication and stores account config. Run /add-email-account to add or manage accounts.
+description: Register an email mailbox for skills to operate on — reading, triage, drafting, bulk archive. NOT a channel; inbound emails will not wake the agent. For email-as-a-channel, use /add-gmail instead. Supports Google Workspace (Gmail), Microsoft 365 (Outlook/Exchange), and IMAP.
 ---
 
 # Add Email Account
 
-Register email accounts that other provider-aware skills and downstream workflows can use. Each account has a provider type, credentials, and a verified connection.
+Register email accounts that other skills (`/email-archive`, `/email-triage`, etc.) can **operate on**. Each account has a provider type, credentials, and a verified connection.
+
+> **This is for reading / triage / drafting — not a channel.**
+>
+> `/add-email-account` registers a mailbox that skills *act on*: batch-classifying old mail, summarizing the inbox, drafting replies you still send by hand. Incoming emails do **not** trigger the agent here.
+>
+> If you want emails to *wake the agent* — route inbound mail into a chat thread, reply via the agent, etc. — that's a channel. Use `/add-gmail` instead. You can have both: a mailbox registered for triage here AND the same address wired as a channel via `/add-gmail`.
 
 ## Detect Group
 
@@ -43,45 +49,62 @@ If no accounts exist, proceed to add one.
 
 > What type of email account?
 >
-> 1. **Google Workspace / Gmail** — uses `gws` CLI, OAuth authentication
+> 1. **Google Workspace / Gmail (MCP)** — uses `workspace-mcp`, BYO OAuth client, structured MCP tools (recommended)
 > 2. **Microsoft 365 / Outlook / Exchange** — uses MS365 MCP, OAuth authentication
 > 3. **IMAP** — any standard mail server (iCloud, university, self-hosted)
+> 4. **Google Workspace / Gmail (CLI, deprecated)** — legacy `gws` binary. Kept for backward compatibility with existing `type: gws` accounts. Don't pick this for new setups.
 
 Use `AskUserQuestion` to get the choice.
 
 ### Step 2: Authenticate (provider-specific)
 
-#### Type: `gws` (Google Workspace / Gmail)
+#### Type: `gws_mcp` (Google Workspace via workspace-mcp — recommended)
+
+First-time setup requires a Google Cloud OAuth Desktop Client. If the user hasn't created one, link them to:
+> https://console.cloud.google.com/apis/credentials → *Create Credentials* → *OAuth client ID* → *Desktop app*
+
+Save the client ID and secret into `.env`:
+```
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
+```
+
+Check if tokens already exist:
+```bash
+ls ~/.nanoclaw/.gws-mcp-tokens/*.json 2>/dev/null
+```
+
+If any `*.json` files exist, authentication is already set up. Extract the email from the filename (workspace-mcp names tokens `{sanitized_email}.json`) or parse one of the JSON files for the `email` field.
+
+If no tokens exist:
+> Google Workspace (MCP) needs authentication. Please run:
+> ```
+> ! npm run provider-login gws_mcp
+> ```
+> This runs `scripts/gws-mcp-login.sh` which launches `workspace-mcp`, triggers OAuth via a browser, and writes the token to `~/.nanoclaw/.gws-mcp-tokens/{your_email}.json`. Once complete, tell me to continue.
+
+After auth, verify tokens exist:
+```bash
+ls ~/.nanoclaw/.gws-mcp-tokens/*.json
+```
+
+Extract the email from the filename (strip `.json`, un-sanitize if needed) or from the JSON content.
+
+#### Type: `gws` (Google Workspace CLI — deprecated)
+
+Legacy path. Use only if the user explicitly wants to keep an existing `type: gws` account working. New setups should use `gws_mcp` above.
 
 Check if already authenticated:
 ```bash
 GWS_CREDENTIAL_STORE=plaintext gws gmail users getProfile --format json 2>&1
 ```
 
-If this returns a profile with an email address, authentication is already set up. Extract the email address.
+If authenticated, extract the email address. If not:
+> The legacy `gws` CLI needs auth. Run `! gws auth login`, then tell me to continue.
 
-If not authenticated:
-> Google Workspace CLI needs authentication. Please run:
-> ```
-> ! gws auth login
-> ```
-> This will open a browser for OAuth consent. Once complete, tell me to continue.
-
-After auth, verify:
+Verify tokens are in place for container mounting:
 ```bash
-GWS_CREDENTIAL_STORE=plaintext gws gmail users getProfile --format json
-```
-
-Extract the email address from the profile response.
-
-Check that gws tokens are in the right place for container mounting:
-```bash
-test -d ~/.nanoclaw/.gws-tokens && echo "TOKENS_OK" || echo "TOKENS_MISSING"
-```
-
-If missing, copy credentials:
-```bash
-mkdir -p ~/.nanoclaw/.gws-tokens
+test -d ~/.nanoclaw/.gws-tokens || mkdir -p ~/.nanoclaw/.gws-tokens
 cp ~/.config/gws/credentials.json ~/.nanoclaw/.gws-tokens/ 2>/dev/null
 cp ~/.config/gws/client_secret.json ~/.nanoclaw/.gws-tokens/ 2>/dev/null
 ```
@@ -223,7 +246,12 @@ The ID must be unique, lowercase, alphanumeric + hyphens.
 
 Test that the account can list inbox messages.
 
-**gws:**
+**gws_mcp:**
+```
+Call mcp__gws_mcp__search_gmail_messages with query "in:inbox" and max_results 3.
+```
+
+**gws (deprecated):**
 ```bash
 GWS_CREDENTIAL_STORE=plaintext gws gmail +triage --max 3 --format json
 ```
@@ -245,21 +273,21 @@ Write or update `groups/${MAIN_FOLDER}/email-accounts.yaml`:
 
 ```yaml
 # Registered email accounts
-# Used by: provider-aware skills and downstream workflows
-# Provider types: gws, ms365, imap
+# Used by: /email-archive, /email-triage, and other email skills
+# Provider types: gws_mcp (recommended), ms365, imap, gws (deprecated CLI)
 
 accounts:
   - id: gmail
-    type: gws
+    type: gws_mcp
     address: tonkin@g.clemson.edu
     enabled: true
-    added: "2026-04-11"
+    added: "2026-04-18"
 
   - id: outlook
     type: ms365
     address: tonkin@clemson.edu
     enabled: true
-    added: "2026-04-11"
+    added: "2026-04-18"
 ```
 
 If the file already exists, append the new account (don't overwrite existing entries).
@@ -302,7 +330,21 @@ For `ms365` accounts, also read the `--enabled-tools` regex from `container/prov
 
 This is the canonical reference for email operations by provider type. Other provider-aware skills and downstream workflows should reference this.
 
-### Type: `gws` (Google Workspace)
+### Type: `gws_mcp` (Google Workspace via workspace-mcp)
+
+All operations are MCP tool calls. Tool names follow the Gmail API verbs under the `mcp__gws_mcp__` prefix. Exact signatures come from MCP discovery at runtime — the agent should list tools if uncertain.
+
+| Operation | Tool (typical name) | Args |
+|-----------|---------------------|------|
+| List inbox | `mcp__gws_mcp__search_gmail_messages` | `query: "in:inbox"`, `max_results: N` |
+| List with date filter | `mcp__gws_mcp__search_gmail_messages` | `query: "in:inbox before:YYYY/MM/DD"`, `max_results: N` |
+| Read message | `mcp__gws_mcp__get_gmail_message` | `message_id: MSG_ID` |
+| List labels | `mcp__gws_mcp__list_gmail_labels` | — |
+| Create label | `mcp__gws_mcp__create_gmail_label` | `name: "NAME"` |
+| Move (label + archive) | `mcp__gws_mcp__modify_gmail_message_labels` | `message_id: MSG_ID`, `add_labels: [LABEL_ID]`, `remove_labels: ["INBOX"]` |
+| Batch move | `mcp__gws_mcp__batch_modify_gmail_messages` | `message_ids: [...]`, `add_labels: [LABEL_ID]`, `remove_labels: ["INBOX"]` |
+
+### Type: `gws` (Google Workspace CLI — deprecated, use `gws_mcp` for new setups)
 
 | Operation | Command |
 |-----------|---------|

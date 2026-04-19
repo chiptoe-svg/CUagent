@@ -87,7 +87,23 @@ All categories except "To Delete" live under the `Sorted/` parent folder/label. 
 
 Each account in config.yaml has a `type` field. Use the matching operations:
 
-### Type: `gws`
+### Type: `gws_mcp` (Google Workspace via workspace-mcp — recommended)
+
+All operations are MCP tool calls under the `mcp__gws_mcp__` prefix. Exact tool signatures are discoverable via MCP at runtime — the names below are the typical ones but may vary with workspace-mcp versions; if a call fails with "unknown tool," list available tools and match by capability.
+
+| Operation | Tool (typical) | Args |
+|-----------|----------------|------|
+| List inbox | `mcp__gws_mcp__search_gmail_messages` | `query: "in:inbox"`, `max_results: N` |
+| List with date filter | `mcp__gws_mcp__search_gmail_messages` | `query: "in:inbox before:YYYY/MM/DD"`, `max_results: N` |
+| Read message | `mcp__gws_mcp__get_gmail_message` | `message_id: MSG_ID` |
+| Move to folder | `mcp__gws_mcp__modify_gmail_message_labels` | `message_id: MSG_ID`, `add_labels: [LABEL_ID]`, `remove_labels: ["INBOX"]` |
+| Batch move | `mcp__gws_mcp__batch_modify_gmail_messages` | `message_ids: [...]`, `add_labels: [LABEL_ID]`, `remove_labels: ["INBOX"]` |
+
+Structured tool output replaces JSON parsing — inspect the returned fields directly rather than shelling out and parsing.
+
+### Type: `gws` (Google Workspace CLI — deprecated)
+
+Legacy CLI path. Still works for existing `type: gws` accounts. New accounts should use `gws_mcp`.
 
 | Operation | Command |
 |-----------|---------|
