@@ -50,3 +50,4 @@ ios/**/DerivedData/
 scripts/reminders-host/.build/
 scripts/reminders-host/.swiftpm/
 scripts/reminders-host/Package.resolved
+.claude/worktrees/
