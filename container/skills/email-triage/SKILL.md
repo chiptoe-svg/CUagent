@@ -119,10 +119,7 @@ cat /workspace/group/email-accounts.yaml
 
    **e. If writing the sidecar fails**, fall back to the legacy convention: call `mcp__ms365__update-todo-task` to put the metadata JSON in the task's `body`. The reconcilers can still parse it from there. Warn the user so they can investigate the filesystem issue.
 
-   **f. Fallback surfaces** when MS365 itself is unreachable (token expired, Graph 5xx):
-   1. `mcp__reminders__reminder_create` — clean title (same `→ /account/folder` format), empty notes, same sidecar write after creation.
-   2. `mcp__nanoclaw__todo_create` (deprecated file-backed) as a last resort.
-   Surface the underlying error to the user whenever you fall back.
+   **f. Fallback surface** when MS365 itself is unreachable (token expired, Graph 5xx): `mcp__nanoclaw__todo_create` (deprecated file-backed) as a last resort. If Apple Reminders has been installed on this system via `/add-apple-reminders`, `mcp__reminders__reminder_create` is also acceptable — but don't assume it's present; check `list_mcp_resources` first. Surface the underlying error to the user whenever you fall back.
 
 5. **Update state** — save `last_scan_date` per account
 

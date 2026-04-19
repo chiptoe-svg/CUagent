@@ -7,6 +7,19 @@ description: Add Apple Reminders as a first-class MCP tool surface. Installs a h
 
 Exposes Apple Reminders to the agent as `mcp__reminders__*` tools. Reminders created by the agent appear in the user's Reminders.app and sync to iPhone/iPad via iCloud. When the user tap-completes a reminder on their phone, a host-side reconciliation poll picks it up and enqueues a filing action — this is what makes the email-triage "check it off on my phone and the email files itself" flow work.
 
+## Before you install — pick your task surface
+
+Apple Reminders is **one of two** supported task/reminder surfaces. Most installs should pick one, not both:
+
+- **MS365 To Do** (installed automatically when `/add-email-account` adds a Microsoft account) — lives in Outlook / MS To Do / the Exchange list on iOS Reminders, reconciled via `src/ms365-reconciler.ts`. Best if the user already works out of Outlook or has a Microsoft-tenant iPhone setup.
+- **Apple Reminders** (this skill) — lives in the iCloud list on iOS Reminders, reconciled via `src/reminders-reconciler.ts`. Best if the user is iCloud-first, uses Siri to add items, or doesn't have MS365.
+
+**Running both on the same install is almost always a mistake.** Email-triage would create duplicate tasks, both reconcilers would fire filings, and the user sees the same todo in two places with no clear source of truth. Only install both if you have a concrete reason — e.g. a shared calendar install where different users prefer different surfaces, and you've taken care to route each user's tasks to exactly one.
+
+Before proceeding, confirm with the user:
+1. Is MS365 already their task surface? If yes, stop — they don't need this.
+2. If they want to switch from MS365 to Apple, plan the cutover: complete or move any open MS365 tasks first, then install this skill, then update the email-triage skill and `container/providers/ms365.json` agent docs to route new tasks here.
+
 **Design decisions** live in `docs/apple-reminders-mcp.md`:
 - Pull-only in v1 (polling, not push). Fine for email-triage latency.
 - State comes from the reminder's own `notes` field — no separate `pending.json`.

@@ -1,6 +1,6 @@
 ---
 name: add-email-triage
-description: Set up email triage — hourly inbox scanning that creates MS365 To Do tasks (or Apple Reminders, or file-backed todos as a last resort) for actionable emails. Filing happens when the task is completed. Requires email accounts (/add-email-account) and archive config (/add-email-archive).
+description: Set up email triage — hourly inbox scanning that creates MS365 To Do tasks (or Apple Reminders if installed, or file-backed todos as a last resort) for actionable emails. Filing happens when the task is completed. Requires email accounts (/add-email-account) and archive config (/add-email-archive).
 ---
 
 # Add Email Triage
@@ -10,20 +10,17 @@ Interactive setup for the email triage system. Configures hourly inbox scanning 
 **Prerequisites:**
 - At least one email account registered (run `/add-email-account`)
 - Email archive configured with taxonomy and rules (run `/add-email-archive`)
-- One of the following to-do surfaces set up (triage uses the first one that's available, in this order):
-  1. **MS365 Tasks** (preferred) — set up via `/add-email-account` if the email account is MS365. Tasks sync to iOS Reminders via the Exchange account.
-  2. **Apple Reminders** — optional, installed via `/add-apple-reminders`. Gives you Siri-creatable items visible to the agent and a different reconciler path.
-  3. **Legacy file-backed `todo_*` tools** — automatic fallback when neither of the above is reachable; kept alive with deprecation warnings.
+- A to-do surface. This skill assumes **MS365 Tasks** is the primary surface — it's what `/add-email-account` (MS365 path) sets up, and its tap-completes sync back to us through the MS365 reconciler. Apple Reminders is supported as an alternative if you prefer to keep tasks in iCloud and have installed `/add-apple-reminders` — but pick one; running both against the same email account leads to duplicate task items and duplicate filings when completed.
 
 ## Tool surface
 
-Email triage prefers **MS365 To Do** for new items via `mcp__ms365__create-todo-task` into the user's default task list (typically named `Tasks`). When the task is tap-completed on any Microsoft surface (Outlook, MS To Do, iOS Reminders Exchange list), `src/ms365-reconciler.ts` picks it up within ~5 min and enqueues the filing action.
+Email triage uses **MS365 To Do** for new items via `mcp__ms365__create-todo-task` into the user's default task list (typically named `Tasks`). When the task is tap-completed on any Microsoft surface (Outlook, MS To Do, iOS Reminders Exchange list), `src/ms365-reconciler.ts` picks it up within ~5 min and enqueues the filing action.
 
 **Clean titles + sidecar metadata.** The user-visible task title is of the form `<concise action> → /<account>/<folder>` (e.g. `Reply to Dr. Smith re: budget → /gmail/Sorted/Work`). The email-filing metadata (message id, sender, subject, proposed folder) lives in a sidecar JSON at `groups/<main>/email-triage/state/tasks.json`, keyed by task id. **Do not** stuff JSON into the task body — iOS Reminders renders body text as a second line under the title and it reads as noise.
 
-If MS365 isn't set up on this install but Apple Reminders is, the same pattern applies: clean title into an "Email Actions" list, metadata in the sidecar. `src/reminders-reconciler.ts` handles completions via EventKit.
+If this install uses Apple Reminders instead (via `/add-apple-reminders`), the same clean-title + sidecar pattern applies into an "Email Actions" list, and `src/reminders-reconciler.ts` handles the completions via EventKit. Only one surface should be active at a time.
 
-If neither is reachable, fall back to the deprecated `mcp__nanoclaw__todo_create`. Log the fallback so the user knows to re-run `todo_migrate_to_reminders` (Apple path) or re-enable MS365 once things are back.
+If MS365 is temporarily unreachable, fall back to the deprecated `mcp__nanoclaw__todo_create` (or Apple Reminders, if installed). Log the fallback so the user knows to re-enable MS365 once things are back.
 
 ## Phase 1: Prerequisites
 
