@@ -667,7 +667,10 @@ async function main(): Promise<void> {
     // Close the running container's stdin so it idles out; no hard kill.
     queue.closeStdin(chatJid);
 
-    logger.info({ chatJid, folder: group.folder }, 'Session cleared via /clear');
+    logger.info(
+      { chatJid, folder: group.folder },
+      'Session cleared via /clear',
+    );
     await channel.sendMessage(
       chatJid,
       'Context cleared. Next message starts a fresh session.',
