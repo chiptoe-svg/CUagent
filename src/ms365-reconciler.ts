@@ -114,16 +114,48 @@ interface MsalCache {
   RefreshToken?: Record<string, { secret: string }>;
 }
 
+/**
+ * Read the MSAL cache, transparently unwrapping the new envelope format that
+ * ms-365-mcp-server adopted in early 2026. New writes look like
+ * `{_cacheEnvelope: true, data: "<JSON string>", savedAt: <ms>}`; older writes
+ * (and other MSAL implementations) are the cache JSON at the top level.
+ */
+function readMsalCache(): MsalCache | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(TOKEN_CACHE_PATH, 'utf-8');
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    (parsed as Record<string, unknown>)._cacheEnvelope === true &&
+    typeof (parsed as Record<string, unknown>).data === 'string'
+  ) {
+    try {
+      return JSON.parse(
+        (parsed as { data: string }).data,
+      ) as MsalCache;
+    } catch {
+      return null;
+    }
+  }
+  return parsed as MsalCache;
+}
+
 async function getAccessToken(): Promise<string | null> {
   const conf = getClientAndTenant();
   if (!conf) return null;
 
-  let cache: MsalCache;
-  try {
-    cache = JSON.parse(fs.readFileSync(TOKEN_CACHE_PATH, 'utf-8')) as MsalCache;
-  } catch {
-    return null;
-  }
+  const cache = readMsalCache();
+  if (!cache) return null;
 
   // Use a non-expired access token if one exists (1 min safety buffer).
   const now = Date.now();
