@@ -81,19 +81,48 @@ cat /workspace/group/email-accounts.yaml
       - **Uncertain** → add to uncertain list (reported in summary for user to decide)
       - **Clearly not actionable** → skip (leave in inbox)
 
-4. **Create a to-do item** for actionable emails. Preferred surface: **MS365 To Do** (tasks sync to iOS Reminders via the Exchange account and the user works out of MS365). Call `mcp__ms365__create-todo-task` with:
-   - `title`: concise action (e.g., "Reply to Dr. Smith re: budget meeting")
-   - `body`: JSON string with email metadata (same convention as the legacy todo path):
-     ```json
-     {"email_id": "MSG_ID", "account": "gmail", "from": "smith@clemson.edu", "subject": "Budget meeting", "folder": "Sorted/Work"}
-     ```
+4. **Create a to-do item** for actionable emails. Preferred surface: **MS365 To Do** (tasks sync to iOS Reminders via the Exchange account and the user works out of MS365). The task the user SEES must never contain raw JSON metadata — that goes in a sidecar file.
+
+   **a. Build the metadata dict** you'll persist to the sidecar:
+   ```json
+   {
+     "email_id": "MSG_ID",
+     "account": "gmail",
+     "from": "smith@clemson.edu",
+     "subject": "Budget meeting",
+     "folder": "Sorted/Work"
+   }
+   ```
+
+   **b. Build the clean title.** Format: `<concise action> → /<account>/<folder>`. Keep the arrow (`→`) and slash-delimited path exactly as shown so the user can scan destinations at a glance.
+   - Example: `Reply to Dr. Smith re: budget meeting → /gmail/Sorted/Work`
+   - `<account>` is the short form (`gmail`, `outlook`, or `ms365` — match the account's `type`).
+   - `<folder>` is the proposed filing folder (preserve case; don't invent hierarchy).
+
+   **c. Call `mcp__ms365__create-todo-task`** with:
+   - `title`: the clean title from (b). **Never put JSON in the title.**
+   - `body`: **leave empty** (`{"content": "", "contentType": "text"}` or omit). All metadata lives in the sidecar now.
    - `dueDateTime`: extracted from email content if present (e.g., "by Friday", "due April 18", "deadline tomorrow"), otherwise next business day (skip weekends — Friday defaults to Monday, Saturday/Sunday default to Monday). Provide as an object with `dateTime` and `timeZone` per Graph's requirements.
-   - `importance`: `high` if urgent signals, `normal` otherwise
+   - `importance`: `high` if urgent signals, `normal` otherwise.
    - List: the user's default To Do list (named `Tasks` on this install). Call `mcp__ms365__list-todo-lists` once at setup time to get the `listId`.
-   - On MS365 failure (token expired, Graph 5xx), fall back in order:
-     1. `mcp__reminders__reminder_create` into an "Email Actions" Apple Reminders list (call `reminder_list_available` / `reminder_list_create` if the list doesn't exist). Same metadata convention but in `notes` instead of `body`.
-     2. `mcp__nanoclaw__todo_create` (deprecated file-backed fallback) so triage doesn't lose items.
-   - Surface the underlying error to the user whenever you fall back, so they can fix the upstream cause.
+
+   Capture the returned task `id`.
+
+   **d. Persist the metadata to the sidecar at `/workspace/group/email-triage/state/tasks.json`.** Use `mcp__nanoclaw__file_read` + `mcp__nanoclaw__file_write` (or `bash` with `jq`/`python`). The file is a single JSON object keyed by task id:
+   ```json
+   {
+     "AAMkAD...task-id-1": {"email_id": "...", "account": "gmail", ...},
+     "AAMkAD...task-id-2": {...}
+   }
+   ```
+   Create `email-triage/state/` if it doesn't exist. Read the current JSON (or `{}` if the file doesn't exist), set `obj[task.id] = metadata`, write back atomically.
+
+   **e. If writing the sidecar fails**, fall back to the legacy convention: call `mcp__ms365__update-todo-task` to put the metadata JSON in the task's `body`. The reconcilers can still parse it from there. Warn the user so they can investigate the filesystem issue.
+
+   **f. Fallback surfaces** when MS365 itself is unreachable (token expired, Graph 5xx):
+   1. `mcp__reminders__reminder_create` — clean title (same `→ /account/folder` format), empty notes, same sidecar write after creation.
+   2. `mcp__nanoclaw__todo_create` (deprecated file-backed) as a last resort.
+   Surface the underlying error to the user whenever you fall back.
 
 5. **Update state** — save `last_scan_date` per account
 
@@ -125,10 +154,10 @@ When the user says something like "mark the Smith email as done" or `/email-tria
 
 Steps:
 
-1. **Look up the to-do item** only if invoked manually — the reconcilers pass the parsed metadata directly. For manual invocation:
+1. **Look up the to-do item** only if invoked manually — the reconcilers pass the parsed metadata directly in the prompt.
    - MS365: `mcp__ms365__list-todo-tasks` (filter by id)
-   - Apple: `mcp__reminders__reminder_list` (list: "Email Actions", include_notes: true)
-2. **Parse the metadata** to get `email_id`, `account`, and proposed `folder`
+   - Apple: `mcp__reminders__reminder_list` (list: "Email Actions")
+2. **Get the metadata**: first check the sidecar at `/workspace/group/email-triage/state/tasks.json` keyed by the task/reminder id — that's the canonical source. Fall back to parsing JSON from the task body / reminder notes only for legacy items (pre-2026-04-19, before the sidecar convention).
 3. **Move the email** to the folder:
 
    **gws_mcp** (preferred — structured MCP tools):
@@ -155,7 +184,8 @@ Steps:
    ```json
    {"timestamp": "ISO", "email_id": "...", "account": "...", "folder": "...", "task_id": "..."}
    ```
-6. **Confirm** only if the user triggered it manually: "Filed 'Budget meeting' → Sorted/Work. Task completed." Reconciler-triggered filings should run silently (no chat message).
+6. **Clean up the sidecar** — remove `tasks.json[task_id]` so it doesn't grow unboundedly. Safe to skip if the filing failed; the next completion will overwrite.
+7. **Confirm** only if the user triggered it manually: "Filed 'Budget meeting' → Sorted/Work. Task completed." Reconciler-triggered filings should run silently (no chat message).
 
 ## Status Mode
 

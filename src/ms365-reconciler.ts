@@ -23,7 +23,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, GROUPS_DIR } from './config.js';
 import { createTask, getTaskById } from './db.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -191,11 +191,55 @@ async function fetchRecentlyCompleted(token: string): Promise<TodoTask[]> {
   return all;
 }
 
-function tryParseEmailMeta(body: TodoTask['body']): EmailMetadata | null {
+/**
+ * Look up email-triage metadata for a task.
+ *
+ * Primary source: the sidecar at groups/<main>/email-triage/state/tasks.json,
+ * keyed by the task id. Written by the email-triage skill when it creates the
+ * task; keeps the user-facing task body clean.
+ *
+ * Fallback: parse task.body as JSON, for tasks created before the sidecar
+ * convention (pre-2026-04-19).
+ */
+function lookupEmailMeta(
+  mainFolder: string,
+  taskId: string,
+  body: TodoTask['body'],
+): EmailMetadata | null {
+  // 1. Sidecar (primary)
+  try {
+    const sidecarPath = path.join(
+      GROUPS_DIR,
+      mainFolder,
+      'email-triage',
+      'state',
+      'tasks.json',
+    );
+    const raw = fs.readFileSync(sidecarPath, 'utf-8');
+    const map = JSON.parse(raw) as Record<string, unknown>;
+    const entry = map[taskId];
+    if (
+      entry &&
+      typeof entry === 'object' &&
+      typeof (entry as Record<string, unknown>).email_id === 'string' &&
+      typeof (entry as Record<string, unknown>).account === 'string'
+    ) {
+      const e = entry as Record<string, unknown>;
+      return {
+        email_id: e.email_id as string,
+        account: e.account as string,
+        from: typeof e.from === 'string' ? e.from : undefined,
+        subject: typeof e.subject === 'string' ? e.subject : undefined,
+        folder: typeof e.folder === 'string' ? e.folder : undefined,
+      };
+    }
+  } catch {
+    /* sidecar missing or stale — fall through to body parse */
+  }
+
+  // 2. Body-JSON fallback (pre-sidecar tasks)
   const content = body?.content?.trim();
   if (!content) return null;
-  // MS To-Do strips the JSON of formatting if you save it through the UI.
-  // Try parsing as-is first, then strip HTML if that fails.
   const candidates = [content, content.replace(/<[^>]*>/g, '').trim()];
   for (const c of candidates) {
     try {
@@ -301,7 +345,7 @@ export function startMs365Reconciler(deps: Ms365ReconcilerDeps): void {
       for (const t of tasks) {
         if (t.status !== 'completed' || seen.has(t.id)) continue;
 
-        const meta = tryParseEmailMeta(t.body);
+        const meta = lookupEmailMeta(main.group.folder, t.id, t.body);
         seen.add(t.id);
         seenList.push({ id: t.id, at: Date.now() });
         if (!meta) continue;

@@ -17,11 +17,13 @@ Interactive setup for the email triage system. Configures hourly inbox scanning 
 
 ## Tool surface
 
-Email triage prefers **MS365 To Do** for new items via `mcp__ms365__create-todo-task` into the user's default task list (typically named `Tasks`). Each task's `body` field stores the email metadata as JSON — message id, account, sender, subject, proposed folder — so the filing step has everything it needs without re-querying the inbox. When the task is tap-completed on any Microsoft surface (Outlook, MS To Do, iOS Reminders Exchange list), `src/ms365-reconciler.ts` picks it up within ~5 min and enqueues the filing action.
+Email triage prefers **MS365 To Do** for new items via `mcp__ms365__create-todo-task` into the user's default task list (typically named `Tasks`). When the task is tap-completed on any Microsoft surface (Outlook, MS To Do, iOS Reminders Exchange list), `src/ms365-reconciler.ts` picks it up within ~5 min and enqueues the filing action.
 
-If MS365 isn't set up on this install but Apple Reminders is, use `mcp__reminders__reminder_create` into a dedicated list (default: "Email Actions"); `src/reminders-reconciler.ts` handles completions via EventKit. Same JSON convention goes in the reminder's `notes` field.
+**Clean titles + sidecar metadata.** The user-visible task title is of the form `<concise action> → /<account>/<folder>` (e.g. `Reply to Dr. Smith re: budget → /gmail/Sorted/Work`). The email-filing metadata (message id, sender, subject, proposed folder) lives in a sidecar JSON at `groups/<main>/email-triage/state/tasks.json`, keyed by task id. **Do not** stuff JSON into the task body — iOS Reminders renders body text as a second line under the title and it reads as noise.
 
-If neither is reachable, fall back to the deprecated `mcp__nanoclaw__todo_create` so triage doesn't break. Log the fallback so the user knows to re-run `todo_migrate_to_reminders` (Apple path) or re-enable MS365 once things are back.
+If MS365 isn't set up on this install but Apple Reminders is, the same pattern applies: clean title into an "Email Actions" list, metadata in the sidecar. `src/reminders-reconciler.ts` handles completions via EventKit.
+
+If neither is reachable, fall back to the deprecated `mcp__nanoclaw__todo_create`. Log the fallback so the user knows to re-run `todo_migrate_to_reminders` (Apple path) or re-enable MS365 once things are back.
 
 ## Phase 1: Prerequisites
 
