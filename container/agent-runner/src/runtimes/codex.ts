@@ -41,9 +41,6 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Input tokens before triggering native compaction */
-const COMPACT_THRESHOLD = 40_000;
-
 /** Timeout for the entire turn (5 minutes) */
 const TURN_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -260,18 +257,12 @@ async function runCodexQuery(
 
     log(`Turn complete. Result: ${turnState.resultText.length} chars, ${turnState.toolCalls.length} tool calls`);
 
-    // Trigger native compaction if cumulative tokens exceed threshold
-    if (turnState.totalInputTokens >= COMPACT_THRESHOLD) {
-      log(`Compaction threshold reached (${turnState.totalInputTokens}/${COMPACT_THRESHOLD} tokens). Compacting...`);
-      const compactResp = await sendCodexRequest(server, 'thread/compact/start', {
-        threadId: newThreadId,
-      });
-      if (compactResp.error) {
-        log(`Compaction failed: ${compactResp.error.message}. Continuing uncompacted.`);
-      } else {
-        log('Native compaction completed');
-      }
-    }
+    // Compaction is handled by the Codex app-server based on its own context-
+    // pressure heuristics; it notifies us via the `thread/compacted`
+    // notification (logged above) when it actually runs. We don't force a
+    // local threshold — an earlier 40k-token trigger here was a holdover
+    // from pre-app-server days and caused unnecessary drift by compacting
+    // far below real context pressure.
 
     writeOutput({ status: 'success', result: turnState.resultText || null, newSessionId: newThreadId });
 

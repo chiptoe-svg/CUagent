@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 struct Message: Identifiable {
@@ -35,6 +36,12 @@ struct ContentView: View {
                                     Text("Thinking...")
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button("Cancel") {
+                                        client.cancelRequest()
+                                    }
+                                    .font(.subheadline)
+                                    .foregroundStyle(.red)
                                 }
                                 .padding(.horizontal)
                                 .id("loading")
@@ -230,7 +237,7 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView(client: client)
+                SettingsView(client: client, speech: speech)
             }
             .onAppear {
                 if !client.isConfigured {
@@ -311,9 +318,16 @@ struct MessageBubble: View {
 
 struct SettingsView: View {
     @ObservedObject var client: NanoClawClient
+    @ObservedObject var speech: SpeechManager
     @Environment(\.dismiss) private var dismiss
     @State private var editingServer: ServerInstance?
     @State private var showAddSheet = false
+    @State private var showVoicePicker = false
+
+    private var selectedVoiceName: String {
+        if speech.selectedVoiceID.isEmpty { return "System Default" }
+        return AVSpeechSynthesisVoice(identifier: speech.selectedVoiceID)?.name ?? "System Default"
+    }
 
     var body: some View {
         NavigationStack {
@@ -364,6 +378,27 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Voice") {
+                    Button {
+                        showVoicePicker = true
+                    } label: {
+                        HStack {
+                            Text("Voice")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text(selectedVoiceName)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    Button("Preview Voice") {
+                        speech.speak("Hello, I'm your NanoVoice assistant.")
+                    }
+                }
+
                 Section("About") {
                     Text("NanoVoice connects to NanoClaw agents via the HTTP API channel. Each server needs a URL and API key from the server's .env file (HTTP_API_KEY).")
                         .font(.caption)
@@ -383,6 +418,17 @@ struct SettingsView: View {
             .sheet(item: $editingServer) { server in
                 ServerEditView(client: client, server: server, isEditing: true)
             }
+            .sheet(isPresented: $showVoicePicker) {
+                VoicePickerView(speech: speech)
+            }
+        }
+    }
+
+    private func qualityLabel(_ quality: AVSpeechSynthesisVoiceQuality) -> String {
+        switch quality {
+        case .premium: return "Premium"
+        case .enhanced: return "Enhanced"
+        default: return "Default"
         }
     }
 }
@@ -468,7 +514,14 @@ struct ServerEditView: View {
 
         Task {
             do {
-                let url = URL(string: "\(server.url)/api/message")!
+                let trimmed = server.url.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let url = URL(string: "\(trimmed)/api/message") else {
+                    await MainActor.run {
+                        isTesting = false
+                        testResult = "Invalid URL"
+                    }
+                    return
+                }
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -491,6 +544,90 @@ struct ServerEditView: View {
                     testResult = error.localizedDescription
                 }
             }
+        }
+    }
+}
+
+// MARK: - Voice Picker
+
+struct VoicePickerView: View {
+    @ObservedObject var speech: SpeechManager
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button {
+                    speech.selectedVoiceID = ""
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text("System Default")
+                        Spacer()
+                        if speech.selectedVoiceID.isEmpty {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+
+                ForEach(groupedVoices, id: \.quality) { group in
+                    Section(group.label) {
+                        ForEach(group.voices, id: \.identifier) { voice in
+                            Button {
+                                speech.selectedVoiceID = voice.identifier
+                                dismiss()
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(voice.name)
+                                            .foregroundStyle(.primary)
+                                        Text(voice.language)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if voice.identifier == speech.selectedVoiceID {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(.blue)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Voice")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private struct VoiceGroup {
+        let quality: Int
+        let label: String
+        let voices: [AVSpeechSynthesisVoice]
+    }
+
+    private var groupedVoices: [VoiceGroup] {
+        let voices = speech.availableVoices
+        var groups: [Int: [AVSpeechSynthesisVoice]] = [:]
+        for voice in voices {
+            groups[voice.quality.rawValue, default: []].append(voice)
+        }
+        return groups.keys.sorted(by: >).compactMap { rawValue in
+            guard let voices = groups[rawValue] else { return nil }
+            let label: String
+            switch AVSpeechSynthesisVoiceQuality(rawValue: rawValue) {
+            case .premium: label = "Premium"
+            case .enhanced: label = "Enhanced"
+            default: label = "Default"
+            }
+            return VoiceGroup(quality: rawValue, label: label, voices: voices)
         }
     }
 }

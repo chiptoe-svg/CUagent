@@ -23,6 +23,7 @@ class NanoClawClient: ObservableObject {
 
     private let serversKey = "savedServers"
     private let activeKey = "activeServerID"
+    private var currentTask: Task<String, Error>?
 
     var activeServer: ServerInstance? {
         servers.first { $0.id == activeServerID }
@@ -99,41 +100,56 @@ class NanoClawClient: ObservableObject {
 
     // MARK: - API
 
+    func cancelRequest() {
+        currentTask?.cancel()
+        currentTask = nil
+        Task { @MainActor in isLoading = false }
+    }
+
     func sendMessage(_ text: String) async throws -> String {
         guard let server = activeServer else {
             throw ClientError.notConfigured
         }
 
-        let url = URL(string: "\(server.url)/api/message")!
+        let trimmedURL = server.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: "\(trimmedURL)/api/message") else {
+            throw ClientError.serverError(statusCode: 0, message: "Invalid server URL: \(server.url)")
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(server.apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 300
+        request.timeoutInterval = 120
 
         let body: [String: String] = ["text": text]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         await MainActor.run { isLoading = true }
-        defer { Task { @MainActor in isLoading = false } }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let task = Task<String, Error> {
+            defer { Task { @MainActor in isLoading = false } }
 
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw ClientError.invalidResponse
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Task.checkCancellation()
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw ClientError.invalidResponse
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+                throw ClientError.serverError(statusCode: httpResponse.statusCode, message: errorBody)
+            }
+
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let responseText = json["response"] as? String else {
+                throw ClientError.invalidResponse
+            }
+
+            return responseText
         }
-
-        guard httpResponse.statusCode == 200 else {
-            let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
-            throw ClientError.serverError(statusCode: httpResponse.statusCode, message: errorBody)
-        }
-
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let responseText = json["response"] as? String else {
-            throw ClientError.invalidResponse
-        }
-
-        return responseText
+        currentTask = task
+        return try await task.value
     }
 
     enum ClientError: LocalizedError {

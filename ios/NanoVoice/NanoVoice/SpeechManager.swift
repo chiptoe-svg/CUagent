@@ -13,6 +13,23 @@ class SpeechManager: NSObject, ObservableObject {
         didSet { UserDefaults.standard.set(autoSend, forKey: "autoSend") }
     }
 
+    /// The identifier of the selected voice. Empty means system default.
+    @Published var selectedVoiceID: String = "" {
+        didSet { UserDefaults.standard.set(selectedVoiceID, forKey: "selectedVoiceID") }
+    }
+
+    /// Available English voices grouped by quality, best first.
+    var availableVoices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("en") }
+            .sorted { lhs, rhs in
+                if lhs.quality != rhs.quality {
+                    return lhs.quality.rawValue > rhs.quality.rawValue
+                }
+                return lhs.name < rhs.name
+            }
+    }
+
     /// Called when silence is detected and autoSend is on.
     var onAutoSend: (() -> Void)?
 
@@ -33,6 +50,7 @@ class SpeechManager: NSObject, ObservableObject {
         super.init()
         synthesizer.delegate = self
         autoSend = UserDefaults.standard.bool(forKey: "autoSend")
+        selectedVoiceID = UserDefaults.standard.string(forKey: "selectedVoiceID") ?? ""
         requestAuthorization()
     }
 
@@ -181,7 +199,11 @@ class SpeechManager: NSObject, ObservableObject {
         }
 
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        if !selectedVoiceID.isEmpty, let voice = AVSpeechSynthesisVoice(identifier: selectedVoiceID) {
+            utterance.voice = voice
+        } else {
+            utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        }
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         utterance.pitchMultiplier = 1.0
 

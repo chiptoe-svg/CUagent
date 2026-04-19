@@ -22,6 +22,10 @@
 	<string>NanoVoice uses speech recognition to convert your voice to text for the AI assistant.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>NanoVoice connects to your NanoClaw server on the local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_http._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
