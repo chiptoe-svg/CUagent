@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -677,6 +678,92 @@ async function main(): Promise<void> {
     );
   }
 
+  // Handle /info — report session health (tokens, compactions, message count)
+  async function handleSessionInfo(chatJid: string): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) return;
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+
+    const sessionId = sessions[group.folder];
+    const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+
+    // Find the running container (if any) and read its cumulative log
+    let containerName: string | null = null;
+    let containerLogs = '';
+    let containerAgeMs: number | null = null;
+    try {
+      const ps = execSync(
+        `docker ps --filter "name=nanoclaw-${safeName}-" --format "{{.Names}}|{{.CreatedAt}}"`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      ).trim();
+      if (ps) {
+        const [name, createdAt] = ps.split('\n')[0].split('|');
+        containerName = name;
+        const created = new Date(createdAt.replace(/ [A-Z]{3,4}$/, ''));
+        if (!isNaN(created.getTime())) {
+          containerAgeMs = Date.now() - created.getTime();
+        }
+        containerLogs = execSync(`docker logs ${name} 2>&1`, {
+          encoding: 'utf-8',
+          maxBuffer: 20 * 1024 * 1024,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      }
+    } catch {
+      /* no container or docker unreachable — report what we can */
+    }
+
+    // Parse tokens from the most recent "Token usage: N in, M out" line
+    const tokenMatches = [
+      ...containerLogs.matchAll(/Token usage: (\d+) in, (\d+) out/g),
+    ];
+    const last = tokenMatches[tokenMatches.length - 1];
+    const tokensIn = last ? parseInt(last[1], 10) : 0;
+    const tokensOut = last ? parseInt(last[2], 10) : 0;
+
+    // Compaction count + turn count from log markers
+    const compactions = (
+      containerLogs.match(/Compaction threshold reached/g) || []
+    ).length;
+    const turns = (containerLogs.match(/Turn complete\./g) || []).length;
+
+    // Health thresholds tuned from observed drift patterns
+    let health = '💚 healthy';
+    if (tokensIn > 5_000_000) health = '🔴 should /clear';
+    else if (tokensIn > 2_000_000) health = '🟡 consider /clear';
+
+    const fmt = (n: number): string =>
+      n >= 1_000_000
+        ? `${(n / 1_000_000).toFixed(1)}M`
+        : n >= 1_000
+          ? `${(n / 1_000).toFixed(1)}k`
+          : String(n);
+
+    const fmtAge = (ms: number): string => {
+      const s = Math.floor(ms / 1000);
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m`;
+      const h = Math.floor(m / 60);
+      const rem = m % 60;
+      return rem > 0 ? `${h}h${rem}m` : `${h}h`;
+    };
+
+    const lines = [
+      `Group: ${group.folder}`,
+      `Session: ${sessionId ? sessionId.slice(0, 8) + '…' : '(none — next message starts fresh)'}`,
+      containerName
+        ? `Container: ${containerName} (up ${containerAgeMs != null ? fmtAge(containerAgeMs) : '?'})`
+        : 'Container: not running',
+      `Turns completed: ${turns}`,
+      `Compactions: ${compactions}`,
+      `Tokens: ${fmt(tokensIn)} in / ${fmt(tokensOut)} out`,
+      `Health: ${health}`,
+    ];
+    await channel.sendMessage(chatJid, lines.join('\n'));
+  }
+
   // Handle /remote-control and /remote-control-end commands
   async function handleRemoteControl(
     command: string,
@@ -759,6 +846,13 @@ async function main(): Promise<void> {
       if (trimmed === '/clear' || trimmed === '/reset') {
         handleClearSession(chatJid).catch((err) =>
           logger.error({ err, chatJid }, 'Clear session command error'),
+        );
+        return;
+      }
+
+      if (trimmed === '/info' || trimmed === '/session-info') {
+        handleSessionInfo(chatJid).catch((err) =>
+          logger.error({ err, chatJid }, 'Session info command error'),
         );
         return;
       }
