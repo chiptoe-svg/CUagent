@@ -2,11 +2,12 @@
  * Microsoft 365 To-Do reconciliation poll.
  *
  * Symmetric with reminders-reconciler.ts but for the MS365 provider. Every
- * MS365_RECONCILER_INTERVAL seconds (default 300 = 5 min, slower than the
- * Apple poll because MS Graph is rate-limited), asks Graph which to-do
+ * MS365_RECONCILER_INTERVAL seconds (default 30), asks Graph which to-do
  * tasks were completed in the last 24h. For any completed task whose body
  * parses as email-triage metadata, enqueues a one-shot agent task to file
- * the email via the MS365 MCP tools running in-container.
+ * the email via the MS365 MCP tools running in-container. 30s puts us at
+ * ~120 polls/hr — well inside Graph's per-app limit of 10000 requests per
+ * 10 min on the /me/todo surface.
  *
  * Token handling: reads the @azure/msal-node cache that ms-365-mcp-server
  * maintains at ~/.nanoclaw/.ms365-tokens/.token-cache.json, and refreshes
@@ -42,7 +43,7 @@ const PROVIDER_CONFIG_PATH = path.join(
 );
 const STATE_FILE = path.join(DATA_DIR, 'ms365-reconciled.json');
 
-const DEFAULT_INTERVAL_S = 300;
+const DEFAULT_INTERVAL_S = 30;
 const SEEN_TTL_MS = 48 * 60 * 60 * 1000;
 const SEEN_MAX = 2000;
 const LOOKBACK_HOURS = 24;
@@ -140,9 +141,7 @@ function readMsalCache(): MsalCache | null {
     typeof (parsed as Record<string, unknown>).data === 'string'
   ) {
     try {
-      return JSON.parse(
-        (parsed as { data: string }).data,
-      ) as MsalCache;
+      return JSON.parse((parsed as { data: string }).data) as MsalCache;
     } catch {
       return null;
     }
