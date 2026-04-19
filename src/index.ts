@@ -650,6 +650,30 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
+  // Handle /clear (reset agent session for this group)
+  async function handleClearSession(chatJid: string): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) {
+      logger.warn({ chatJid }, 'Clear session rejected: not main group');
+      return;
+    }
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+
+    // Drop the session row — next container spawn starts with no resumed thread.
+    delete sessions[group.folder];
+    deleteSession(group.folder);
+
+    // Close the running container's stdin so it idles out; no hard kill.
+    queue.closeStdin(chatJid);
+
+    logger.info({ chatJid, folder: group.folder }, 'Session cleared via /clear');
+    await channel.sendMessage(
+      chatJid,
+      'Context cleared. Next message starts a fresh session.',
+    );
+  }
+
   // Handle /remote-control and /remote-control-end commands
   async function handleRemoteControl(
     command: string,
@@ -725,6 +749,13 @@ async function main(): Promise<void> {
       if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
         handleRemoteControl(trimmed, chatJid, msg).catch((err) =>
           logger.error({ err, chatJid }, 'Remote control command error'),
+        );
+        return;
+      }
+
+      if (trimmed === '/clear' || trimmed === '/reset') {
+        handleClearSession(chatJid).catch((err) =>
+          logger.error({ err, chatJid }, 'Clear session command error'),
         );
         return;
       }

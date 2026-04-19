@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var showSettings = false
     @State private var autoSpeak = true
+    @State private var typedText = ""
 
     var body: some View {
         NavigationStack {
@@ -73,6 +74,27 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.ultraThinMaterial)
                 }
+
+                Divider()
+
+                // Text input bar
+                HStack(spacing: 8) {
+                    TextField("Type a message…", text: $typedText)
+                        .textFieldStyle(.roundedBorder)
+                        .submitLabel(.send)
+                        .onSubmit { sendTypedText() }
+
+                    Button {
+                        sendTypedText()
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.blue)
+                    }
+                    .disabled(typedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || client.isLoading)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
 
                 Divider()
 
@@ -234,10 +256,20 @@ struct ContentView: View {
         return "mic"
     }
 
+    private func sendTypedText() {
+        let text = typedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        typedText = ""
+        sendText(text)
+    }
+
     private func sendTranscribedText() {
         let text = speech.transcribedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        sendText(text)
+    }
 
+    private func sendText(_ text: String) {
         messages.append(Message(text: text, isUser: true))
         errorMessage = nil
 
