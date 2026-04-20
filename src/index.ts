@@ -856,6 +856,37 @@ async function main(): Promise<void> {
     await channel.sendMessage(chatJid, formatCostReport(report, 24));
   }
 
+  // Handle /suggest-mail-rules — show rule proposals built from the archive.
+  async function handleSuggestMailRulesCommand(
+    chatJid: string,
+  ): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) return;
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+    const { buildSuggestions, formatSuggestionsReport } = await import(
+      './mail-rule-suggester.js'
+    );
+    const suggestions = buildSuggestions(group.folder);
+    await channel.sendMessage(chatJid, formatSuggestionsReport(suggestions));
+  }
+
+  // Handle /apply-gmail-filters — create all missing Gmail filters.
+  async function handleApplyGmailFiltersCommand(
+    chatJid: string,
+  ): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) return;
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+    const { buildSuggestions, applyGmailFilters, formatApplyReport } =
+      await import('./mail-rule-suggester.js');
+    await channel.sendMessage(chatJid, 'Creating Gmail filters…');
+    const suggestions = buildSuggestions(group.folder);
+    const report = applyGmailFilters(suggestions);
+    await channel.sendMessage(chatJid, formatApplyReport(report));
+  }
+
   // Handle /refresh-pricing — re-fetch live pricing from provider pages.
   async function handleRefreshPricingCommand(chatJid: string): Promise<void> {
     const group = registeredGroups[chatJid];
@@ -1055,6 +1086,26 @@ async function main(): Promise<void> {
       if (trimmed === '/refresh-pricing') {
         handleRefreshPricingCommand(chatJid).catch((err) =>
           logger.error({ err, chatJid }, 'Refresh pricing command error'),
+        );
+        return;
+      }
+
+      if (trimmed === '/suggest-mail-rules') {
+        handleSuggestMailRulesCommand(chatJid).catch((err) =>
+          logger.error(
+            { err, chatJid },
+            'Suggest mail rules command error',
+          ),
+        );
+        return;
+      }
+
+      if (trimmed === '/apply-gmail-filters') {
+        handleApplyGmailFiltersCommand(chatJid).catch((err) =>
+          logger.error(
+            { err, chatJid },
+            'Apply Gmail filters command error',
+          ),
         );
         return;
       }
