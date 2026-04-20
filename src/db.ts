@@ -77,6 +77,25 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
 
+    -- Interactive-chat runs — one row per agent turn outside the scheduler.
+    -- Used only for cost aggregation (no per-turn audit surface). Keeping this
+    -- separate from task_run_logs avoids polluting the scheduled-task JOIN
+    -- queries with rows that don't have a parent task.
+    CREATE TABLE IF NOT EXISTS chat_run_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      run_at TEXT NOT NULL,
+      duration_ms INTEGER,
+      model_used TEXT,
+      input_tokens INTEGER,
+      cached_input_tokens INTEGER,
+      output_tokens INTEGER,
+      reasoning_output_tokens INTEGER,
+      tool_call_count INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_run_logs ON chat_run_logs(run_at);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -607,6 +626,57 @@ export function logTaskRun(log: TaskRunLog): void {
     log.cached_input_tokens ?? null,
     log.reasoning_output_tokens ?? null,
   );
+}
+
+export interface ChatRunLog {
+  group_folder: string;
+  chat_jid: string;
+  run_at: string;
+  duration_ms: number | null;
+  model_used: string | null;
+  input_tokens: number | null;
+  cached_input_tokens: number | null;
+  output_tokens: number | null;
+  reasoning_output_tokens: number | null;
+  tool_call_count: number | null;
+}
+
+export function logChatRun(log: ChatRunLog): void {
+  db.prepare(
+    `INSERT INTO chat_run_logs (
+      group_folder, chat_jid, run_at, duration_ms, model_used,
+      input_tokens, cached_input_tokens, output_tokens,
+      reasoning_output_tokens, tool_call_count
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    log.group_folder,
+    log.chat_jid,
+    log.run_at,
+    log.duration_ms,
+    log.model_used,
+    log.input_tokens,
+    log.cached_input_tokens,
+    log.output_tokens,
+    log.reasoning_output_tokens,
+    log.tool_call_count,
+  );
+}
+
+export function getChatRunsInWindow(
+  startIso: string,
+  endIso: string,
+): ChatRunLog[] {
+  return db
+    .prepare(
+      `SELECT group_folder, chat_jid, run_at, duration_ms, model_used,
+              input_tokens, cached_input_tokens, output_tokens,
+              reasoning_output_tokens, tool_call_count
+       FROM chat_run_logs
+       WHERE run_at >= ? AND run_at < ?
+       ORDER BY run_at ASC`,
+    )
+    .all(startIso, endIso) as ChatRunLog[];
 }
 
 /**

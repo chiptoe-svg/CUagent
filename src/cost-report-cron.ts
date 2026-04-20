@@ -12,7 +12,7 @@
 import { CronExpressionParser } from 'cron-parser';
 
 import { TIMEZONE } from './config.js';
-import { buildCostReport, formatCostReport } from './cost-report.js';
+import { buildCostReport, formatDailyCostOneLiner } from './cost-report.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -56,12 +56,13 @@ export function startDailyCostReport(deps: DailyCostReportDeps): void {
         } else {
           const [mainJid] = mainEntry;
           const report = buildCostReport(24);
-          const text = formatCostReport(report, 24);
+          const text = formatDailyCostOneLiner(report);
           await deps.sendMessage(mainJid, text);
           logger.info(
             {
               totalUsd: report.totalUsd.toFixed(4),
-              runCount: report.runCount,
+              scheduledRuns: report.scheduledRunCount,
+              interactiveTurns: report.interactiveTurnCount,
             },
             'Daily cost report sent',
           );

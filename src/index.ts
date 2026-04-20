@@ -48,6 +48,7 @@ import {
   getNewMessages,
   getRouterState,
   initDatabase,
+  logChatRun,
   setRegisteredGroup,
   setRouterState,
   setSession,
@@ -419,6 +420,11 @@ async function runAgent(
       }
     : undefined;
 
+  const turnStartedAt = Date.now();
+  let turnMetrics:
+    | import('./runtime/types.js').ContainerOutput['metrics']
+    | undefined;
+
   try {
     let lastError: string | undefined;
 
@@ -436,6 +442,9 @@ async function runAgent(
       if (event.sessionId) {
         sessions[group.folder] = event.sessionId;
         setSession(group.folder, event.sessionId);
+      }
+      if (event.metrics) {
+        turnMetrics = event.metrics;
       }
 
       // For runtimes that yield results via AgentEvent (e.g. OpenAI),
@@ -470,6 +479,24 @@ async function runAgent(
           deleteSession(group.folder);
         }
       }
+    }
+
+    if (turnMetrics) {
+      // Persist cost telemetry for this interactive turn. No per-turn audit
+      // surface — this table exists only so /cost-report and the 9pm daily
+      // can sum in the interactive share alongside scheduled tasks.
+      logChatRun({
+        group_folder: group.folder,
+        chat_jid: chatJid,
+        run_at: new Date().toISOString(),
+        duration_ms: Date.now() - turnStartedAt,
+        model_used: group.containerConfig?.model ?? null,
+        input_tokens: turnMetrics.inputTokens,
+        cached_input_tokens: turnMetrics.cachedInputTokens,
+        output_tokens: turnMetrics.outputTokens,
+        reasoning_output_tokens: turnMetrics.reasoningOutputTokens,
+        tool_call_count: turnMetrics.toolCallCount,
+      });
     }
 
     if (lastError) {
