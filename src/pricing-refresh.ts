@@ -86,7 +86,9 @@ async function fetchText(url: string): Promise<string> {
 async function fetchOpenAiPrices(
   skipped: string[],
 ): Promise<Record<string, ModelPrice>> {
-  const html = await fetchText('https://developers.openai.com/api/docs/pricing');
+  const html = await fetchText(
+    'https://developers.openai.com/api/docs/pricing',
+  );
   const rows = extractTableRows(html);
   const prices: Record<string, ModelPrice> = {};
 
@@ -104,7 +106,9 @@ async function fetchOpenAiPrices(
     }
     const input = moneyCells[inputIdx]!;
     // Cached = next money cell, output = last money cell (if distinct).
-    const later = moneyCells.slice(inputIdx + 1).filter((v) => v !== null) as number[];
+    const later = moneyCells
+      .slice(inputIdx + 1)
+      .filter((v) => v !== null) as number[];
     const output = later.length > 0 ? later[later.length - 1] : null;
     const cached = later.length >= 2 ? later[0] : null;
     if (output === null) {
@@ -178,8 +182,10 @@ export async function refreshPricing(): Promise<PricingRefreshResult> {
 
     // Merge over existing file so manual entries (local models, legacy
     // rates) survive. Provider-fetched rows overwrite.
-    let existing: { prices?: Record<string, ModelPrice>; fallback?: ModelPrice } =
-      {};
+    let existing: {
+      prices?: Record<string, ModelPrice>;
+      fallback?: ModelPrice;
+    } = {};
     try {
       existing = JSON.parse(fs.readFileSync(PRICING_FILE_PATH, 'utf-8'));
     } catch {
@@ -204,10 +210,7 @@ export async function refreshPricing(): Promise<PricingRefreshResult> {
     };
 
     fs.mkdirSync(path.dirname(PRICING_FILE_PATH), { recursive: true });
-    fs.writeFileSync(
-      PRICING_FILE_PATH,
-      JSON.stringify(merged, null, 2) + '\n',
-    );
+    fs.writeFileSync(PRICING_FILE_PATH, JSON.stringify(merged, null, 2) + '\n');
     resetPricingCache();
 
     logger.info(

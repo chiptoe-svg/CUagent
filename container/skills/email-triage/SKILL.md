@@ -55,34 +55,42 @@ cat /workspace/group/email-triage/state/progress.yaml 2>/dev/null || echo "no pr
 
 ### Scan Pipeline (when running as scheduled task)
 
-1. **Load state** — read `email-triage/state/progress.yaml` for `last_scan_date` per account
-2. **Fetch new inbox emails** per account:
+**Cost invariant:** every email classified by the LLM costs real money. Emails resolvable by rule should never reach the LLM. Emails resolvable by sender+subject should never have their body fetched. Target: <20% of scanned emails reach full-body LLM classification.
+
+1. **Load state + rules (ONCE at scan start)** — read only these:
+   - `email-triage/state/progress.yaml` for `last_scan_date` per account
+   - `email-archive/rules.yaml` for sender-classified rules
+   - `email-accounts.yaml` for enabled accounts
+
+2. **Fetch minimal email metadata** per account — subject + sender + id only, no body:
 
    **gws:**
    ```bash
    GWS_CREDENTIAL_STORE=plaintext gws gmail +triage --query "in:inbox newer_than:1d" --max 50 --format json
    ```
 
-   **ms365:**
-   ```
-   Call mcp__ms365__list-mail-messages — filter to messages received since last scan.
-   ```
+   **ms365:** `mcp__ms365__list-mail-messages` with `$select=id,subject,from,receivedDateTime` and `$filter` for since-last-scan. Do NOT request bodies at this stage.
 
-3. **For each email, classify:**
+3. **Three-pass classification — stop at the first pass that resolves each email:**
 
-   a. **Check sender rules** from `email-archive/rules.yaml`:
-      - If sender matches a rule for a non-actionable category (Newsletters, Accounts, Notifications, To Delete) → **skip** (leave in inbox for archive run)
-      - If sender matches a rule for an actionable category (Work, Personal) → proceed to step (b)
-      - If no rule matches → proceed to step (b)
+   **Pass A — rules-only (ZERO LLM cost).** For each email, check the sender against `email-archive/rules.yaml`:
+   - Matches a **non-actionable** category (Newsletters, Accounts, Notifications, To Delete) → **SKIP IMMEDIATELY.** Do NOT add the email to further reasoning; it's not actionable. Don't fetch body. Don't count it against the LLM quota.
+   - Matches an **actionable** category (Work, Personal) → mark as `candidate`, proceed to Pass B.
+   - **No rule matches** → mark as `unknown`, proceed to Pass B.
 
-   b. **Read email content** (subject + snippet/preview is usually enough for triage):
-      - Look for signals: question marks, requests ("please", "can you", "need"), deadlines ("by Friday", "due", "deadline"), direct addressing (To: vs CC:)
-      - Assess: does this need a response or action from the user?
+   Emit one log line like `Pass A: skipped N newsletters/digests, M candidates, K unknown` so the cost report can attribute savings.
 
-   c. **Decision:**
-      - **Clearly actionable** → create reminder (step 4)
-      - **Uncertain** → add to uncertain list (reported in summary for user to decide)
-      - **Clearly not actionable** → skip (leave in inbox)
+   **Pass B — sender+subject classification (bounded LLM cost).** Only `candidate` and `unknown` items reach this pass. In ONE turn, classify each using just sender + subject:
+   - **Obviously actionable** (direct request, signed-for items, meeting invites that need response, deadlines in subject) → proceed to Pass C for body fetch.
+   - **Obviously skip** (unsubscribe-only footer senders not already in rules.yaml, auto-replies, bounces) → skip; if the pattern recurs, suggest a rule via `email-archive/rules.yaml` in the final summary.
+   - **Uncertain from subject alone** → proceed to Pass C.
+
+   **Pass C — body-aware classification (most expensive).** Only items that survived Pass B reach here. Fetch bodies ONE AT A TIME (not all at once — each body inflates the context for every subsequent call) and decide:
+   - **Clearly actionable** → create task (step 4).
+   - **Clearly not actionable** → skip.
+   - **Uncertain** → add to uncertain list (reported in summary).
+
+   If Pass A drops 60–80% of emails with zero tokens and Pass B drops another ~half of the rest without bodies, the scan should land under ~$0.10 at default model.
 
 4. **Create a to-do item** for actionable emails. Preferred surface: **MS365 To Do** (tasks sync to iOS Reminders via the Exchange account and the user works out of MS365). The task the user SEES must never contain raw JSON metadata — that goes in a sidecar file.
 
