@@ -129,6 +129,9 @@ function createSchema(database: Database.Database): void {
     'output_tokens INTEGER',
     'tool_call_count INTEGER',
     'exit_code INTEGER',
+    // Model the run actually used (task.model_override OR group default).
+    // Required to cost the run against the pricing table.
+    'model_used TEXT',
   ]) {
     try {
       database.exec(`ALTER TABLE task_run_logs ADD COLUMN ${col}`);
@@ -577,9 +580,9 @@ export function logTaskRun(log: TaskRunLog): void {
     `
     INSERT INTO task_run_logs (
       task_id, run_at, duration_ms, status, result, error,
-      input_tokens, output_tokens, tool_call_count, exit_code
+      input_tokens, output_tokens, tool_call_count, exit_code, model_used
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     log.task_id,
@@ -592,17 +595,58 @@ export function logTaskRun(log: TaskRunLog): void {
     log.output_tokens ?? null,
     log.tool_call_count ?? null,
     log.exit_code ?? null,
+    log.model_used ?? null,
   );
+}
+
+/**
+ * Query runs in a [start, end] window for cost reporting. Joins in the
+ * parent task's prompt/type so the report can group by task.
+ */
+export function getTaskRunsInWindow(
+  startIso: string,
+  endIso: string,
+): Array<{
+  task_id: string;
+  prompt: string;
+  schedule_type: string;
+  run_at: string;
+  duration_ms: number;
+  status: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  tool_call_count: number | null;
+  model_used: string | null;
+}> {
+  return db
+    .prepare(
+      `SELECT r.task_id, t.prompt, t.schedule_type, r.run_at, r.duration_ms,
+              r.status, r.input_tokens, r.output_tokens, r.tool_call_count,
+              r.model_used
+       FROM task_run_logs r
+       JOIN scheduled_tasks t ON t.id = r.task_id
+       WHERE r.run_at >= ? AND r.run_at < ?
+       ORDER BY r.run_at ASC`,
+    )
+    .all(startIso, endIso) as Array<{
+    task_id: string;
+    prompt: string;
+    schedule_type: string;
+    run_at: string;
+    duration_ms: number;
+    status: string;
+    input_tokens: number | null;
+    output_tokens: number | null;
+    tool_call_count: number | null;
+    model_used: string | null;
+  }>;
 }
 
 /**
  * Return the last N runs for a task in chronological order (newest first).
  * Used by the circuit breaker and the /health command.
  */
-export function getRecentTaskRuns(
-  taskId: string,
-  limit: number,
-): TaskRunLog[] {
+export function getRecentTaskRuns(taskId: string, limit: number): TaskRunLog[] {
   const rows = db
     .prepare(
       `SELECT task_id, run_at, duration_ms, status, result, error,

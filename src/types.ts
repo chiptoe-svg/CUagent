@@ -97,6 +97,8 @@ export interface TaskRunLog {
   output_tokens?: number | null;
   tool_call_count?: number | null;
   exit_code?: number | null;
+  /** Effective model name used for this run (override or group default). */
+  model_used?: string | null;
 }
 
 // --- Channel abstraction ---

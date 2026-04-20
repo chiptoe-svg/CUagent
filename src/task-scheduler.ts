@@ -181,7 +181,9 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
-  let metrics: import('./runtime/types.js').ContainerOutput['metrics'] | undefined;
+  let metrics:
+    | import('./runtime/types.js').ContainerOutput['metrics']
+    | undefined;
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
@@ -295,6 +297,7 @@ async function runTask(
     output_tokens: metrics?.outputTokens ?? null,
     tool_call_count: metrics?.toolCallCount ?? null,
     exit_code: metrics?.exitCode ?? null,
+    model_used: effectiveGroup.containerConfig?.model ?? null,
   });
 
   const nextRun = computeNextRun(task);

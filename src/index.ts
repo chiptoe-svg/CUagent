@@ -70,6 +70,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
+import { startDailyCostReport } from './cost-report-cron.js';
 import { fetchOpenTasks, startMs365Reconciler } from './ms365-reconciler.js';
 import { startSessionCleanup } from './session-cleanup.js';
 import { startSchedulerLoop } from './task-scheduler.js';
@@ -815,6 +816,19 @@ async function main(): Promise<void> {
     await channel.sendMessage(chatJid, lines.join('\n'));
   }
 
+  // Handle /cost-report — compute USD cost of scheduled-task runs in last 24h.
+  async function handleCostReportCommand(chatJid: string): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) return;
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+    const { buildCostReport, formatCostReport } = await import(
+      './cost-report.js'
+    );
+    const report = buildCostReport(24);
+    await channel.sendMessage(chatJid, formatCostReport(report, 24));
+  }
+
   // Handle /tasks — fetch open MS365 To Do tasks directly from Graph (no agent).
   async function handleTasksCommand(chatJid: string): Promise<void> {
     const group = registeredGroups[chatJid];
@@ -976,6 +990,13 @@ async function main(): Promise<void> {
         return;
       }
 
+      if (trimmed === '/cost-report' || trimmed === '/cost') {
+        handleCostReportCommand(chatJid).catch((err) =>
+          logger.error({ err, chatJid }, 'Cost report command error'),
+        );
+        return;
+      }
+
       // Sender allowlist drop mode: discard messages from denied senders before storing
       if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
@@ -1105,6 +1126,18 @@ async function main(): Promise<void> {
       for (const group of Object.values(registeredGroups)) {
         writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
       }
+    },
+  });
+
+  // Daily cost auto-report — fires at 21:00 local time each day, sends a
+  // 24h cost summary to the main group. Host-side (no agent, no tokens).
+  // Re-armed after each fire so it keeps running indefinitely.
+  startDailyCostReport({
+    cronExpr: process.env.COST_REPORT_CRON || '0 21 * * *',
+    registeredGroups: () => registeredGroups,
+    sendMessage: async (jid: string, text: string) => {
+      const channel = findChannel(channels, jid);
+      if (channel) await channel.sendMessage(jid, text);
     },
   });
 
