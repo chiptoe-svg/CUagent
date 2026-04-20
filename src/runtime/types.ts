@@ -35,6 +35,12 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  metrics?: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    toolCallCount: number | null;
+    exitCode: number | null;
+  };
 }
 
 // --- Agent events ---
@@ -48,6 +54,8 @@ export interface AgentEvent {
   error?: string;
   /** Tool calls made (for observability) */
   toolCalls?: Array<{ name: string; durationMs: number; isError: boolean }>;
+  /** Final run metrics extracted from container stderr. Set on the last event. */
+  metrics?: ContainerOutput['metrics'];
 }
 
 // --- Container manager ---

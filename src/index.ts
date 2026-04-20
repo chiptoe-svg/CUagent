@@ -764,6 +764,57 @@ async function main(): Promise<void> {
     await channel.sendMessage(chatJid, lines.join('\n'));
   }
 
+  // Handle /health — show last-run snapshot for each scheduled task.
+  async function handleHealthCommand(chatJid: string): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) return;
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+
+    const { getTaskHealthSnapshot } = await import('./db.js');
+    const rows = getTaskHealthSnapshot(10);
+    if (rows.length === 0) {
+      await channel.sendMessage(chatJid, 'No scheduled tasks.');
+      return;
+    }
+
+    const fmtK = (n: number | null): string =>
+      n == null
+        ? '?'
+        : n >= 1_000_000
+          ? `${(n / 1_000_000).toFixed(1)}M`
+          : n >= 1_000
+            ? `${(n / 1_000).toFixed(0)}k`
+            : String(n);
+    const fmtMs = (ms: number | null): string => {
+      if (ms == null) return '?';
+      const s = Math.round(ms / 1000);
+      return s < 60 ? `${s}s` : `${Math.round(s / 60)}m`;
+    };
+
+    const lines = ['*Scheduled task health*', ''];
+    rows.forEach((r, i) => {
+      const prompt = r.prompt.replace(/\n/g, ' ').slice(0, 42);
+      const statusIcon =
+        r.status === 'paused'
+          ? '⏸️'
+          : r.exit_code === 137
+            ? '💀'
+            : r.run_status === 'error'
+              ? '❌'
+              : r.run_status === 'success'
+                ? '✅'
+                : '·';
+      const meta =
+        r.run_at == null
+          ? '(never run)'
+          : `${fmtK(r.input_tokens)}in ${r.tool_call_count ?? '?'}tools ${fmtMs(r.duration_ms)}`;
+      lines.push(`#${i + 1} ${statusIcon} ${prompt} — ${meta}`);
+    });
+
+    await channel.sendMessage(chatJid, lines.join('\n'));
+  }
+
   // Handle /tasks — fetch open MS365 To Do tasks directly from Graph (no agent).
   async function handleTasksCommand(chatJid: string): Promise<void> {
     const group = registeredGroups[chatJid];
@@ -914,6 +965,13 @@ async function main(): Promise<void> {
       if (trimmed === '/tasks') {
         handleTasksCommand(chatJid).catch((err) =>
           logger.error({ err, chatJid }, 'Tasks command error'),
+        );
+        return;
+      }
+
+      if (trimmed === '/health') {
+        handleHealthCommand(chatJid).catch((err) =>
+          logger.error({ err, chatJid }, 'Health command error'),
         );
         return;
       }

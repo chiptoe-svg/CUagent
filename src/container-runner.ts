@@ -56,11 +56,50 @@ export interface ContainerInput {
   baseUrl?: string;
 }
 
+export interface ContainerMetrics {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  toolCallCount: number | null;
+  exitCode: number | null;
+}
+
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionId?: string;
   error?: string;
+  /**
+   * Populated on final resolve by parsing the container's stderr. Captures
+   * per-run cost / behavior telemetry for task-scheduler to persist into
+   * task_run_logs, and for the circuit breaker to evaluate.
+   */
+  metrics?: ContainerMetrics;
+}
+
+/**
+ * Parse the container's accumulated stderr for per-run metrics. The
+ * agent-runner emits well-known lines we can regex:
+ *   - "Token usage: <N> in, <M> out (total)"
+ *   - "[tool] Running: ..." / "[tool] MCP: ..." / "[tool] Web search: ..."
+ * We take the LAST token-usage line (cumulative total at end of run) and
+ * count every [tool] line. `exitCode` is passed in from the close handler.
+ */
+export function extractContainerMetrics(
+  stderr: string,
+  exitCode: number | null,
+): ContainerMetrics {
+  const tokenRe = /Token usage:\s*(\d+)\s+in,\s*(\d+)\s+out/g;
+  let lastMatch: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = tokenRe.exec(stderr)) !== null) lastMatch = m;
+  const inputTokens = lastMatch ? parseInt(lastMatch[1], 10) : null;
+  const outputTokens = lastMatch ? parseInt(lastMatch[2], 10) : null;
+
+  // Each tool invocation gets a `[tool]` tag regardless of kind.
+  const toolMatches = stderr.match(/\[tool\]\s+/g);
+  const toolCallCount = toolMatches ? toolMatches.length : null;
+
+  return { inputTokens, outputTokens, toolCallCount, exitCode };
 }
 
 interface VolumeMount {
@@ -609,6 +648,8 @@ export async function runContainerAgent(
       fs.writeFileSync(logFile, logLines.join('\n'));
       logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
 
+      const metrics = extractContainerMetrics(stderr, code);
+
       if (code !== 0) {
         logger.error(
           {
@@ -626,6 +667,7 @@ export async function runContainerAgent(
           status: 'error',
           result: null,
           error: `Container exited with code ${code}: ${stderr.slice(-200)}`,
+          metrics,
         });
         return;
       }
@@ -634,13 +676,14 @@ export async function runContainerAgent(
       if (onOutput) {
         outputChain.then(() => {
           logger.info(
-            { group: group.name, duration, newSessionId },
+            { group: group.name, duration, newSessionId, metrics },
             'Container completed (streaming mode)',
           );
           resolve({
             status: 'success',
             result: null,
             newSessionId,
+            metrics,
           });
         });
         return;
@@ -664,6 +707,7 @@ export async function runContainerAgent(
         }
 
         const output: ContainerOutput = JSON.parse(jsonLine);
+        output.metrics = metrics;
 
         logger.info(
           {
@@ -671,6 +715,7 @@ export async function runContainerAgent(
             duration,
             status: output.status,
             hasResult: !!output.result,
+            metrics,
           },
           'Container completed',
         );

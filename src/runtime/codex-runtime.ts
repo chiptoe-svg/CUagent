@@ -162,6 +162,7 @@ export class CodexRuntime implements AgentRuntime {
         runtime: this.id,
         error: output.error,
         sessionId: output.newSessionId,
+        metrics: output.metrics,
       };
     } else {
       yield {
@@ -169,6 +170,7 @@ export class CodexRuntime implements AgentRuntime {
         runtime: this.id,
         result: output.result,
         sessionId: output.newSessionId,
+        metrics: output.metrics,
       };
     }
   }

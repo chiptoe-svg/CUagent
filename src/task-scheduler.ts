@@ -12,6 +12,7 @@ import { writeTasksSnapshot } from './runtime/container-manager.js';
 import {
   getAllTasks,
   getDueTasks,
+  getRecentTaskRuns,
   getTaskById,
   logTaskRun,
   updateTask,
@@ -24,6 +25,28 @@ import { RegisteredGroup, ScheduledTask } from './types.js';
 
 function isExpectedTaskError(err: unknown): err is Error {
   return err instanceof Error;
+}
+
+// --- Circuit breaker thresholds ---
+// After N runs in a row that look abnormal (error exit, SIGKILL from timeout,
+// or token burn past the hard ceiling) we auto-pause the task and post a
+// warning to the group. The goal is to stop paying for a looping task long
+// before a human notices.
+const CIRCUIT_CONSECUTIVE_FAILURES = 2;
+const CIRCUIT_INPUT_TOKEN_CEILING = 3_000_000; // one-run hard stop, ~$3.75 at gpt-5.3-codex rates
+const CIRCUIT_DURATION_MS_CEILING = 10 * 60 * 1000; // 10 min = almost certainly thrash
+
+function runLookedBad(run: {
+  status: string;
+  exit_code?: number | null;
+  input_tokens?: number | null;
+  duration_ms: number;
+}): boolean {
+  if (run.status === 'error') return true;
+  if (run.exit_code === 137 || run.exit_code === 143) return true; // SIGKILL / SIGTERM
+  if ((run.input_tokens ?? 0) > CIRCUIT_INPUT_TOKEN_CEILING) return true;
+  if (run.duration_ms > CIRCUIT_DURATION_MS_CEILING) return true;
+  return false;
 }
 
 /**
@@ -158,11 +181,25 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+  let metrics: import('./runtime/types.js').ContainerOutput['metrics'] | undefined;
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
   const sessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+
+  // Per-task model override — clone the group with the override applied so
+  // the runtime reads it through the standard containerConfig path without
+  // mutating the shared group registration.
+  const effectiveGroup: RegisteredGroup = task.model_override
+    ? {
+        ...group,
+        containerConfig: {
+          ...(group.containerConfig || {}),
+          model: task.model_override,
+        },
+      }
+    : group;
 
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
@@ -179,10 +216,10 @@ async function runTask(
   };
 
   try {
-    const runtime = deps.createRuntime(group);
+    const runtime = deps.createRuntime(effectiveGroup);
 
     for await (const event of runtime.run(task.prompt, {
-      group,
+      group: effectiveGroup,
       chatJid: task.chat_jid,
       isMain,
       assistantName: ASSISTANT_NAME,
@@ -222,6 +259,9 @@ async function runTask(
       if (event.sessionId) {
         deps.setSessions(task.group_folder, event.sessionId);
       }
+      if (event.metrics) {
+        metrics = event.metrics;
+      }
       if (event.type === 'error') {
         error = event.error || 'Unknown error';
       } else if (event.type === 'result' && event.result) {
@@ -251,6 +291,10 @@ async function runTask(
     status: error ? 'error' : 'success',
     result,
     error,
+    input_tokens: metrics?.inputTokens ?? null,
+    output_tokens: metrics?.outputTokens ?? null,
+    tool_call_count: metrics?.toolCallCount ?? null,
+    exit_code: metrics?.exitCode ?? null,
   });
 
   const nextRun = computeNextRun(task);
@@ -260,6 +304,43 @@ async function runTask(
       ? result.slice(0, 200)
       : 'Completed';
   updateTaskAfterRun(task.id, nextRun, resultSummary);
+
+  // Circuit breaker — pause the task if the last N runs all looked bad. The
+  // current run is already in task_run_logs, so it counts. Only trips for
+  // recurring tasks; one-shot tasks already auto-complete.
+  if (task.schedule_type !== 'once') {
+    const recent = getRecentTaskRuns(task.id, CIRCUIT_CONSECUTIVE_FAILURES);
+    if (
+      recent.length >= CIRCUIT_CONSECUTIVE_FAILURES &&
+      recent.every(runLookedBad)
+    ) {
+      updateTask(task.id, { status: 'paused' });
+      const reasons = recent
+        .map((r, i) => {
+          const flags: string[] = [];
+          if (r.status === 'error') flags.push('error');
+          if (r.exit_code === 137) flags.push('killed (timeout)');
+          if ((r.input_tokens ?? 0) > CIRCUIT_INPUT_TOKEN_CEILING)
+            flags.push(`${(r.input_tokens! / 1e6).toFixed(1)}M tokens`);
+          if (r.duration_ms > CIRCUIT_DURATION_MS_CEILING)
+            flags.push(`${Math.round(r.duration_ms / 60_000)}m duration`);
+          return `  ${i + 1}. ${flags.join(', ') || 'bad'}`;
+        })
+        .join('\n');
+      logger.warn(
+        { taskId: task.id, prompt: task.prompt.slice(0, 80) },
+        'Circuit breaker tripped — auto-paused task',
+      );
+      try {
+        await deps.sendMessage(
+          task.chat_jid,
+          `⚠️ Auto-paused scheduled task \`${task.prompt.slice(0, 60)}\` — ${CIRCUIT_CONSECUTIVE_FAILURES} consecutive bad runs:\n${reasons}\n\nResume with the /task tool once fixed.`,
+        );
+      } catch (err) {
+        logger.warn({ err }, 'Could not notify chat of circuit trip');
+      }
+    }
+  }
 }
 
 let schedulerRunning = false;

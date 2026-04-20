@@ -71,6 +71,13 @@ export interface ScheduledTask {
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
+  /**
+   * Optional per-task model override (e.g. "gpt-5.4-mini"). When null/unset,
+   * the task uses the group's `containerConfig.model`. Useful for running
+   * cheap-model scans on a schedule while keeping the main group on a
+   * smarter model for interactive turns.
+   */
+  model_override?: string | null;
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;
@@ -85,6 +92,11 @@ export interface TaskRunLog {
   status: 'success' | 'error';
   result: string | null;
   error: string | null;
+  /** Populated post-run from parsing the container log; null if unavailable. */
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  tool_call_count?: number | null;
+  exit_code?: number | null;
 }
 
 // --- Channel abstraction ---

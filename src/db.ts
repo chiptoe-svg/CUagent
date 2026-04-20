@@ -114,6 +114,29 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Per-task model override: lets cheap-model scans coexist with a
+  // smarter group-default for interactive turns.
+  try {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN model_override TEXT`);
+  } catch (err) {
+    if (!isDuplicateColumnMigrationError(err)) throw err;
+  }
+
+  // Run-log metrics — cost / behavior telemetry extracted from the
+  // container log at end-of-run. Nullable because older rows predate this.
+  for (const col of [
+    'input_tokens INTEGER',
+    'output_tokens INTEGER',
+    'tool_call_count INTEGER',
+    'exit_code INTEGER',
+  ]) {
+    try {
+      database.exec(`ALTER TABLE task_run_logs ADD COLUMN ${col}`);
+    } catch (err) {
+      if (!isDuplicateColumnMigrationError(err)) throw err;
+    }
+  }
+
   // Add is_bot_message column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(
@@ -552,8 +575,11 @@ export function updateTaskAfterRun(
 export function logTaskRun(log: TaskRunLog): void {
   db.prepare(
     `
-    INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO task_run_logs (
+      task_id, run_at, duration_ms, status, result, error,
+      input_tokens, output_tokens, tool_call_count, exit_code
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     log.task_id,
@@ -562,7 +588,77 @@ export function logTaskRun(log: TaskRunLog): void {
     log.status,
     log.result,
     log.error,
+    log.input_tokens ?? null,
+    log.output_tokens ?? null,
+    log.tool_call_count ?? null,
+    log.exit_code ?? null,
   );
+}
+
+/**
+ * Return the last N runs for a task in chronological order (newest first).
+ * Used by the circuit breaker and the /health command.
+ */
+export function getRecentTaskRuns(
+  taskId: string,
+  limit: number,
+): TaskRunLog[] {
+  const rows = db
+    .prepare(
+      `SELECT task_id, run_at, duration_ms, status, result, error,
+              input_tokens, output_tokens, tool_call_count, exit_code
+       FROM task_run_logs
+       WHERE task_id = ?
+       ORDER BY run_at DESC
+       LIMIT ?`,
+    )
+    .all(taskId, limit) as TaskRunLog[];
+  return rows;
+}
+
+/**
+ * Return the most recent run for each of the N most-recently-run tasks,
+ * plus their parent task metadata. Used by the /health Telegram command.
+ */
+export function getTaskHealthSnapshot(limit: number): Array<{
+  task_id: string;
+  prompt: string;
+  status: string;
+  run_at: string | null;
+  duration_ms: number | null;
+  input_tokens: number | null;
+  tool_call_count: number | null;
+  exit_code: number | null;
+  run_status: string | null;
+  error: string | null;
+}> {
+  return db
+    .prepare(
+      `SELECT t.id AS task_id, t.prompt, t.status,
+              r.run_at, r.duration_ms, r.input_tokens, r.tool_call_count,
+              r.exit_code, r.status AS run_status, r.error
+       FROM scheduled_tasks t
+       LEFT JOIN (
+         SELECT task_id, MAX(run_at) AS max_run FROM task_run_logs GROUP BY task_id
+       ) latest ON latest.task_id = t.id
+       LEFT JOIN task_run_logs r
+         ON r.task_id = latest.task_id AND r.run_at = latest.max_run
+       WHERE t.status IN ('active', 'paused')
+       ORDER BY COALESCE(r.run_at, t.created_at) DESC
+       LIMIT ?`,
+    )
+    .all(limit) as Array<{
+    task_id: string;
+    prompt: string;
+    status: string;
+    run_at: string | null;
+    duration_ms: number | null;
+    input_tokens: number | null;
+    tool_call_count: number | null;
+    exit_code: number | null;
+    run_status: string | null;
+    error: string | null;
+  }>;
 }
 
 // --- Router state accessors ---
