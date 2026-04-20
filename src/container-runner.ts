@@ -57,8 +57,14 @@ export interface ContainerInput {
 }
 
 export interface ContainerMetrics {
+  /** Raw input tokens for the whole run, INCLUDING cached. */
   inputTokens: number | null;
+  /** Subset of inputTokens that hit the provider's prompt cache. Priced
+   *  at the cached rate (typically half of regular input). */
+  cachedInputTokens: number | null;
   outputTokens: number | null;
+  /** Subset of outputTokens that were reasoning (billed as output). */
+  reasoningOutputTokens: number | null;
   toolCallCount: number | null;
   exitCode: number | null;
 }
@@ -79,7 +85,9 @@ export interface ContainerOutput {
 /**
  * Parse the container's accumulated stderr for per-run metrics. The
  * agent-runner emits well-known lines we can regex:
- *   - "Token usage: <N> in, <M> out (total)"
+ *   - "Token usage: <N> in (<C> cached), <M> out (<R> reasoning) (total)"
+ *     (new format, includes cached + reasoning breakdown)
+ *   - "Token usage: <N> in, <M> out (total)" (legacy format, pre-cached)
  *   - "[tool] Running: ..." / "[tool] MCP: ..." / "[tool] Web search: ..."
  * We take the LAST token-usage line (cumulative total at end of run) and
  * count every [tool] line. `exitCode` is passed in from the close handler.
@@ -88,18 +96,44 @@ export function extractContainerMetrics(
   stderr: string,
   exitCode: number | null,
 ): ContainerMetrics {
-  const tokenRe = /Token usage:\s*(\d+)\s+in,\s*(\d+)\s+out/g;
-  let lastMatch: RegExpExecArray | null = null;
-  let m: RegExpExecArray | null;
-  while ((m = tokenRe.exec(stderr)) !== null) lastMatch = m;
-  const inputTokens = lastMatch ? parseInt(lastMatch[1], 10) : null;
-  const outputTokens = lastMatch ? parseInt(lastMatch[2], 10) : null;
+  // Try the detailed format first; fall back to legacy if not found.
+  const detailedRe =
+    /Token usage:\s*(\d+)\s+in\s*\((\d+)\s+cached\),\s*(\d+)\s+out\s*\((\d+)\s+reasoning\)/g;
+  const legacyRe = /Token usage:\s*(\d+)\s+in,\s*(\d+)\s+out/g;
 
-  // Each tool invocation gets a `[tool]` tag regardless of kind.
+  let inputTokens: number | null = null;
+  let cachedInputTokens: number | null = null;
+  let outputTokens: number | null = null;
+  let reasoningOutputTokens: number | null = null;
+
+  let last: RegExpExecArray | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = detailedRe.exec(stderr)) !== null) last = m;
+  if (last) {
+    inputTokens = parseInt(last[1], 10);
+    cachedInputTokens = parseInt(last[2], 10);
+    outputTokens = parseInt(last[3], 10);
+    reasoningOutputTokens = parseInt(last[4], 10);
+  } else {
+    last = null;
+    while ((m = legacyRe.exec(stderr)) !== null) last = m;
+    if (last) {
+      inputTokens = parseInt(last[1], 10);
+      outputTokens = parseInt(last[2], 10);
+    }
+  }
+
   const toolMatches = stderr.match(/\[tool\]\s+/g);
   const toolCallCount = toolMatches ? toolMatches.length : null;
 
-  return { inputTokens, outputTokens, toolCallCount, exitCode };
+  return {
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    toolCallCount,
+    exitCode,
+  };
 }
 
 interface VolumeMount {

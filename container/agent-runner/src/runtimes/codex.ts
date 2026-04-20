@@ -192,10 +192,29 @@ async function runCodexQuery(
             break;
 
           case 'thread/tokenUsage/updated': {
-            const usage = params.tokenUsage as { total?: { inputTokens?: number; outputTokens?: number } } | undefined;
+            // Codex exposes cached + reasoning token counts alongside the
+            // raw totals; we log all four so the host-side metrics parser
+            // can price them correctly (cached input is half-rate on most
+            // OpenAI models, reasoning output is billed as output).
+            const usage = params.tokenUsage as
+              | {
+                  total?: {
+                    inputTokens?: number;
+                    cachedInputTokens?: number;
+                    outputTokens?: number;
+                    reasoningOutputTokens?: number;
+                  };
+                }
+              | undefined;
             if (usage?.total) {
               turnState.totalInputTokens = usage.total.inputTokens || 0;
-              log(`Token usage: ${usage.total.inputTokens} in, ${usage.total.outputTokens} out (total)`);
+              const inp = usage.total.inputTokens || 0;
+              const cached = usage.total.cachedInputTokens || 0;
+              const out = usage.total.outputTokens || 0;
+              const reasoning = usage.total.reasoningOutputTokens || 0;
+              log(
+                `Token usage: ${inp} in (${cached} cached), ${out} out (${reasoning} reasoning) (total)`,
+              );
             }
             break;
           }

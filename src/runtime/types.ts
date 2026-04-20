@@ -37,7 +37,9 @@ export interface ContainerOutput {
   error?: string;
   metrics?: {
     inputTokens: number | null;
+    cachedInputTokens: number | null;
     outputTokens: number | null;
+    reasoningOutputTokens: number | null;
     toolCallCount: number | null;
     exitCode: number | null;
   };

@@ -94,7 +94,11 @@ export interface TaskRunLog {
   error: string | null;
   /** Populated post-run from parsing the container log; null if unavailable. */
   input_tokens?: number | null;
+  /** Subset of input_tokens that hit the provider's prompt cache. */
+  cached_input_tokens?: number | null;
   output_tokens?: number | null;
+  /** Subset of output_tokens used for reasoning (billed as output). */
+  reasoning_output_tokens?: number | null;
   tool_call_count?: number | null;
   exit_code?: number | null;
   /** Effective model name used for this run (override or group default). */

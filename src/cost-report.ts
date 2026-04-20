@@ -11,20 +11,24 @@
  * surprised by the gap.
  */
 import { getTaskRunsInWindow } from './db.js';
-import { computeRunCostUsd, getPricingFilePath } from './pricing.js';
+import { computeRunCost, getPricingFilePath } from './pricing.js';
 
 export interface CostReport {
   windowStart: string;
   windowEnd: string;
   totalUsd: number;
+  cacheSavedUsd: number;
   runCount: number;
   byTask: Array<{
     task_id: string;
     prompt: string;
     runs: number;
     totalUsd: number;
+    cacheSavedUsd: number;
     totalInputTokens: number;
+    totalCachedInputTokens: number;
     totalOutputTokens: number;
+    totalReasoningOutputTokens: number;
     models: string[];
   }>;
   unpricedRuns: number;
@@ -45,8 +49,11 @@ export function buildCostReport(windowHours = 24): CostReport {
       prompt: string;
       runs: number;
       totalUsd: number;
+      cacheSavedUsd: number;
       totalInputTokens: number;
+      totalCachedInputTokens: number;
       totalOutputTokens: number;
+      totalReasoningOutputTokens: number;
       models: Set<string>;
     }
   >();
@@ -54,9 +61,10 @@ export function buildCostReport(windowHours = 24): CostReport {
   let unpricedRuns = 0;
 
   for (const r of runs) {
-    const cost = computeRunCostUsd({
+    const cost = computeRunCost({
       model: r.model_used,
       inputTokens: r.input_tokens,
+      cachedInputTokens: r.cached_input_tokens,
       outputTokens: r.output_tokens,
     });
     if (r.input_tokens == null && r.output_tokens == null) unpricedRuns++;
@@ -68,16 +76,22 @@ export function buildCostReport(windowHours = 24): CostReport {
         prompt: r.prompt,
         runs: 0,
         totalUsd: 0,
+        cacheSavedUsd: 0,
         totalInputTokens: 0,
+        totalCachedInputTokens: 0,
         totalOutputTokens: 0,
+        totalReasoningOutputTokens: 0,
         models: new Set<string>(),
       };
       byTaskMap.set(r.task_id, bucket);
     }
     bucket.runs += 1;
-    bucket.totalUsd += cost;
+    bucket.totalUsd += cost.totalUsd;
+    bucket.cacheSavedUsd += cost.cacheSavedUsd;
     bucket.totalInputTokens += r.input_tokens || 0;
+    bucket.totalCachedInputTokens += r.cached_input_tokens || 0;
     bucket.totalOutputTokens += r.output_tokens || 0;
+    bucket.totalReasoningOutputTokens += r.reasoning_output_tokens || 0;
     if (r.model_used) bucket.models.add(r.model_used);
   }
 
@@ -87,18 +101,23 @@ export function buildCostReport(windowHours = 24): CostReport {
       prompt: b.prompt,
       runs: b.runs,
       totalUsd: b.totalUsd,
+      cacheSavedUsd: b.cacheSavedUsd,
       totalInputTokens: b.totalInputTokens,
+      totalCachedInputTokens: b.totalCachedInputTokens,
       totalOutputTokens: b.totalOutputTokens,
+      totalReasoningOutputTokens: b.totalReasoningOutputTokens,
       models: Array.from(b.models),
     }))
     .sort((a, b) => b.totalUsd - a.totalUsd);
 
   const totalUsd = byTask.reduce((s, t) => s + t.totalUsd, 0);
+  const cacheSavedUsd = byTask.reduce((s, t) => s + t.cacheSavedUsd, 0);
 
   return {
     windowStart: startIso,
     windowEnd: endIso,
     totalUsd,
+    cacheSavedUsd,
     runCount: runs.length,
     byTask,
     unpricedRuns,
@@ -124,19 +143,39 @@ export function formatCostReport(r: CostReport, windowHours = 24): string {
     return `${header}\n\nNo scheduled-task runs in the window.\n\nNote: interactive chat turns are not yet tracked in this report.`;
   }
 
-  const lines = [header, '', `*Total: ${fmtUsd(r.totalUsd)}* across ${r.runCount} run(s)`, ''];
+  const cacheLine =
+    r.cacheSavedUsd > 0
+      ? ` (cache saved ~${fmtUsd(r.cacheSavedUsd)})`
+      : '';
+  const lines = [
+    header,
+    '',
+    `*Total: ${fmtUsd(r.totalUsd)}*${cacheLine} across ${r.runCount} run(s)`,
+    '',
+  ];
 
   r.byTask.forEach((t, i) => {
     const prompt = t.prompt.replace(/\n/g, ' ').slice(0, 40);
     const models = t.models.length ? t.models.join(', ') : 'unknown';
+    const cachedPct =
+      t.totalInputTokens > 0
+        ? Math.round((t.totalCachedInputTokens / t.totalInputTokens) * 100)
+        : 0;
+    const cacheSuffix =
+      t.totalCachedInputTokens > 0
+        ? ` (${cachedPct}% cached, saved ${fmtUsd(t.cacheSavedUsd)})`
+        : '';
     lines.push(
       `#${i + 1} ${prompt}`,
-      `  ${t.runs} run(s) · ${fmtUsd(t.totalUsd)} · ${fmtTokens(t.totalInputTokens)}in / ${fmtTokens(t.totalOutputTokens)}out · ${models}`,
+      `  ${t.runs} run(s) · ${fmtUsd(t.totalUsd)} · ${fmtTokens(t.totalInputTokens)}in / ${fmtTokens(t.totalOutputTokens)}out · ${models}${cacheSuffix}`,
     );
   });
 
   if (r.unpricedRuns > 0) {
-    lines.push('', `_${r.unpricedRuns} run(s) missing token data — not priced._`);
+    lines.push(
+      '',
+      `_${r.unpricedRuns} run(s) missing token data — not priced._`,
+    );
   }
   lines.push('', `_Pricing: ${r.pricingSource ?? 'embedded defaults'}_`);
   lines.push(`_Interactive chat turns not included (future work)._`);

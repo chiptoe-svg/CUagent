@@ -16,8 +16,15 @@ import path from 'path';
 import { logger } from './logger.js';
 
 export interface ModelPrice {
-  input: number; // USD per 1M input tokens
+  input: number; // USD per 1M input tokens (uncached)
   output: number; // USD per 1M output tokens
+  /**
+   * Optional override for cached-input pricing. If unset, cached tokens
+   * are billed at half the `input` rate (OpenAI's standard cache
+   * discount). Setting this lets a user override per-model if a provider
+   * diverges from the 50% default.
+   */
+  cached_input?: number;
 }
 
 interface PricingFile {
@@ -95,19 +102,78 @@ export function lookupPrice(model: string | null | undefined): ModelPrice {
   return table.fallback || EMBEDDED_DEFAULTS.fallback!;
 }
 
+export interface RunCostBreakdown {
+  /** Total billed USD for the run. */
+  totalUsd: number;
+  /** USD paid for uncached input tokens. */
+  uncachedInputUsd: number;
+  /** USD paid for cached input tokens (discounted). */
+  cachedInputUsd: number;
+  /** USD paid for output tokens (includes reasoning — same rate). */
+  outputUsd: number;
+  /** USD that WOULD have been charged if these cached tokens were uncached. */
+  cacheSavedUsd: number;
+  /** Effective cached-rate used (USD per 1M). */
+  cachedRate: number;
+}
+
 /**
- * Compute USD cost for a single run. Returns 0 if we don't have token
- * counts (can't price an unmeasured run).
+ * Compute USD cost for a single run with cached-token awareness.
+ *
+ * inputTokens is the raw model-side total (INCLUDES cached). We split it
+ * into cached and uncached portions and bill each at its own rate. If
+ * cachedInputTokens is unknown (legacy rows), we treat all input as
+ * uncached — slightly over-bills, but safely on the conservative side.
+ * Returns a zeroed breakdown when token counts are missing entirely.
  */
+export function computeRunCost(params: {
+  model: string | null | undefined;
+  inputTokens: number | null | undefined;
+  cachedInputTokens?: number | null;
+  outputTokens: number | null | undefined;
+}): RunCostBreakdown {
+  const { inputTokens, outputTokens } = params;
+  const cached = params.cachedInputTokens ?? 0;
+
+  const price = lookupPrice(params.model);
+  const cachedRate =
+    price.cached_input !== undefined ? price.cached_input : price.input * 0.5;
+
+  const zero: RunCostBreakdown = {
+    totalUsd: 0,
+    uncachedInputUsd: 0,
+    cachedInputUsd: 0,
+    outputUsd: 0,
+    cacheSavedUsd: 0,
+    cachedRate,
+  };
+  if (inputTokens == null && outputTokens == null) return zero;
+
+  const inp = inputTokens || 0;
+  const out = outputTokens || 0;
+  const uncached = Math.max(inp - cached, 0);
+
+  const uncachedInputUsd = (uncached / 1_000_000) * price.input;
+  const cachedInputUsd = (cached / 1_000_000) * cachedRate;
+  const outputUsd = (out / 1_000_000) * price.output;
+  const cacheSavedUsd = (cached / 1_000_000) * (price.input - cachedRate);
+
+  return {
+    totalUsd: uncachedInputUsd + cachedInputUsd + outputUsd,
+    uncachedInputUsd,
+    cachedInputUsd,
+    outputUsd,
+    cacheSavedUsd,
+    cachedRate,
+  };
+}
+
+/** Back-compat alias. Returns the single total USD. */
 export function computeRunCostUsd(params: {
   model: string | null | undefined;
   inputTokens: number | null | undefined;
+  cachedInputTokens?: number | null;
   outputTokens: number | null | undefined;
 }): number {
-  const { inputTokens, outputTokens } = params;
-  if (inputTokens == null && outputTokens == null) return 0;
-  const price = lookupPrice(params.model);
-  const inCost = ((inputTokens || 0) / 1_000_000) * price.input;
-  const outCost = ((outputTokens || 0) / 1_000_000) * price.output;
-  return inCost + outCost;
+  return computeRunCost(params).totalUsd;
 }

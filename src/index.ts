@@ -822,9 +822,8 @@ async function main(): Promise<void> {
     if (!group?.isMain) return;
     const channel = findChannel(channels, chatJid);
     if (!channel) return;
-    const { buildCostReport, formatCostReport } = await import(
-      './cost-report.js'
-    );
+    const { buildCostReport, formatCostReport } =
+      await import('./cost-report.js');
     const report = buildCostReport(24);
     await channel.sendMessage(chatJid, formatCostReport(report, 24));
   }

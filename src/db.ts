@@ -132,6 +132,13 @@ function createSchema(database: Database.Database): void {
     // Model the run actually used (task.model_override OR group default).
     // Required to cost the run against the pricing table.
     'model_used TEXT',
+    // Cached-input subset of input_tokens. Priced at the provider's cached
+    // rate (typically half of normal input). Unknown on pre-cached-format
+    // runs (left null — report shows them as uncached).
+    'cached_input_tokens INTEGER',
+    // Reasoning subset of output_tokens. Same billing as output but surfaced
+    // for transparency so the report shows where output cost went.
+    'reasoning_output_tokens INTEGER',
   ]) {
     try {
       database.exec(`ALTER TABLE task_run_logs ADD COLUMN ${col}`);
@@ -580,9 +587,10 @@ export function logTaskRun(log: TaskRunLog): void {
     `
     INSERT INTO task_run_logs (
       task_id, run_at, duration_ms, status, result, error,
-      input_tokens, output_tokens, tool_call_count, exit_code, model_used
+      input_tokens, output_tokens, tool_call_count, exit_code, model_used,
+      cached_input_tokens, reasoning_output_tokens
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     log.task_id,
@@ -596,6 +604,8 @@ export function logTaskRun(log: TaskRunLog): void {
     log.tool_call_count ?? null,
     log.exit_code ?? null,
     log.model_used ?? null,
+    log.cached_input_tokens ?? null,
+    log.reasoning_output_tokens ?? null,
   );
 }
 
@@ -614,14 +624,17 @@ export function getTaskRunsInWindow(
   duration_ms: number;
   status: string;
   input_tokens: number | null;
+  cached_input_tokens: number | null;
   output_tokens: number | null;
+  reasoning_output_tokens: number | null;
   tool_call_count: number | null;
   model_used: string | null;
 }> {
   return db
     .prepare(
       `SELECT r.task_id, t.prompt, t.schedule_type, r.run_at, r.duration_ms,
-              r.status, r.input_tokens, r.output_tokens, r.tool_call_count,
+              r.status, r.input_tokens, r.cached_input_tokens,
+              r.output_tokens, r.reasoning_output_tokens, r.tool_call_count,
               r.model_used
        FROM task_run_logs r
        JOIN scheduled_tasks t ON t.id = r.task_id
@@ -636,7 +649,9 @@ export function getTaskRunsInWindow(
     duration_ms: number;
     status: string;
     input_tokens: number | null;
+    cached_input_tokens: number | null;
     output_tokens: number | null;
+    reasoning_output_tokens: number | null;
     tool_call_count: number | null;
     model_used: string | null;
   }>;
