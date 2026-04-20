@@ -187,14 +187,17 @@ async function getAccessToken(): Promise<string | null> {
           grant_type: 'refresh_token',
           client_id: conf.clientId,
           refresh_token: refresh.secret,
-          // Broad scope so one refreshed token serves the reconciler
-          // (Tasks.Read), /tasks command (Tasks.Read), and the action-
-          // folder watcher (Mail.ReadWrite, Tasks.ReadWrite) without
-          // separate refresh calls per consumer.
+          // Do NOT include `offline_access` — that would ask Azure to
+          // return a new refresh token and rotate the old one. Since we
+          // don't write back to the MSAL cache (the in-container MCP
+          // owns it), any rotation would leave the MCP's MSAL referring
+          // to a just-invalidated RT. Asking for only access-token
+          // scopes keeps the cached RT intact between refreshes.
+          // Broad scope so one refreshed token serves the reconciler,
+          // /tasks command, and the action-folder watcher.
           scope:
             'https://graph.microsoft.com/Mail.ReadWrite ' +
-            'https://graph.microsoft.com/Tasks.ReadWrite ' +
-            'offline_access',
+            'https://graph.microsoft.com/Tasks.ReadWrite',
         }).toString(),
       },
     );

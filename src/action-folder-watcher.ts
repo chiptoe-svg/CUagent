@@ -286,10 +286,15 @@ function listGmailMessages(labelId: string): GmailMessage[] {
       }),
       '--format',
       'json',
-    ]) as { id: string; payload?: { headers?: Array<{ name: string; value: string }> } } | null;
+    ]) as {
+      id: string;
+      payload?: { headers?: Array<{ name: string; value: string }> };
+    } | null;
     if (!meta) continue;
     const headers = meta.payload?.headers || [];
-    const subject = headers.find((h) => h.name.toLowerCase() === 'subject')?.value;
+    const subject = headers.find(
+      (h) => h.name.toLowerCase() === 'subject',
+    )?.value;
     const from = headers.find((h) => h.name.toLowerCase() === 'from')?.value;
     out.push({ id: meta.id, subject, from });
   }
@@ -407,7 +412,12 @@ export function startActionFolderWatcher(deps: ActionFolderWatcherDeps): void {
           seenList.push({ id: m.id, at: Date.now() });
           created += 1;
           logger.info(
-            { messageId: m.id, taskId, subject: m.subject?.slice(0, 60), src: 'ms365' },
+            {
+              messageId: m.id,
+              taskId,
+              subject: m.subject?.slice(0, 60),
+              src: 'ms365',
+            },
             'action-folder: created task from dropped email',
           );
         }
@@ -440,7 +450,12 @@ export function startActionFolderWatcher(deps: ActionFolderWatcherDeps): void {
           seenList.push({ id: m.id, at: Date.now() });
           created += 1;
           logger.info(
-            { messageId: m.id, taskId, subject: m.subject?.slice(0, 60), src: 'gmail' },
+            {
+              messageId: m.id,
+              taskId,
+              subject: m.subject?.slice(0, 60),
+              src: 'gmail',
+            },
             'action-folder: created task from dropped email',
           );
         }
