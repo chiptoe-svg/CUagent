@@ -768,9 +768,25 @@ server.tool(
   async (args) => {
     try {
       const dir = args.cwd || '/workspace/group';
-      // Use find with -name for simple patterns, or bash globstar for complex ones
+      // Reject patterns with shell metachars we never expect in globs — protects
+      // against injection via the directly-interpolated command below.
+      if (/['"`$\\;|&<>\n]/.test(args.pattern)) {
+        return {
+          content: [
+            { type: 'text' as const, text: `Error: unsafe characters in pattern` },
+          ],
+          isError: true,
+        };
+      }
+      // `-name` only matches basenames; `-path` is required for patterns that
+      // include a directory segment like `email-archive/config.yaml`.
+      // Strip leading `**/` either way — `find` walks subdirs by default.
+      const normalised = args.pattern.replace(/^\*\*\//, '');
+      const matchExpr = normalised.includes('/')
+        ? `-path '*/${normalised}'`
+        : `-name '${normalised}'`;
       const result = execSync(
-        `find ${dir} -path '*/node_modules' -prune -o -path '*/.git' -prune -o -name '${args.pattern.replace(/\*\*\//g, '')}' -print | head -100`,
+        `find ${dir} -path '*/node_modules' -prune -o -path '*/.git' -prune -o ${matchExpr} -print | head -100`,
         { encoding: 'utf-8', timeout: 10000 },
       ).trim();
       return { content: [{ type: 'text' as const, text: result || '(no matches)' }] };
