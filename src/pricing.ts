@@ -34,22 +34,23 @@ interface PricingFile {
 }
 
 const EMBEDDED_DEFAULTS: PricingFile = {
-  lastUpdated: '2026-04-20 (embedded baseline — verify before relying on)',
+  lastUpdated: '2026-04-20 (verified via WebFetch of provider pricing pages)',
   prices: {
-    // OpenAI gpt-5.4 family — published rates per developers.openai.com
+    // OpenAI — developers.openai.com/api/docs/pricing
     'gpt-5.4-pro': { input: 30.0, output: 180.0 },
     'gpt-5.4': { input: 2.5, cached_input: 0.25, output: 15.0 },
-    'gpt-5.4-mini': { input: 0.75, cached_input: 0.08, output: 4.5 },
+    'gpt-5.4-mini': { input: 0.75, cached_input: 0.075, output: 4.5 },
     'gpt-5.4-nano': { input: 0.2, cached_input: 0.02, output: 1.25 },
-    // Older / estimated — adjust to your tenant's actual pricing
-    'gpt-5.3-codex': { input: 1.25, cached_input: 0.125, output: 10.0 },
-    'gpt-5.3-mini': { input: 0.25, cached_input: 0.025, output: 2.0 },
-    'gpt-5.3': { input: 5.0, cached_input: 0.5, output: 40.0 },
-    // Anthropic — 90% cache-read discount on all cache-eligible tiers
-    'claude-opus-4-7': { input: 15.0, cached_input: 1.5, output: 75.0 },
-    'claude-opus-4-6': { input: 15.0, cached_input: 1.5, output: 75.0 },
+    'gpt-5.3-codex': { input: 1.75, cached_input: 0.175, output: 14.0 },
+    'gpt-5.3-chat-latest': { input: 1.75, cached_input: 0.175, output: 14.0 },
+    'o4-mini-2025-04-16': { input: 4.0, cached_input: 1.0, output: 16.0 },
+    // Anthropic — claude.com/pricing (cached_input = cache-read; cache-write
+    // premium at 25% over input isn't tracked yet).
+    'claude-opus-4-7': { input: 5.0, cached_input: 0.5, output: 25.0 },
+    'claude-opus-4-6': { input: 5.0, cached_input: 0.5, output: 25.0 },
     'claude-sonnet-4-6': { input: 3.0, cached_input: 0.3, output: 15.0 },
-    'claude-haiku-4-5': { input: 0.8, cached_input: 0.08, output: 4.0 },
+    'claude-sonnet-4-5': { input: 3.0, cached_input: 0.3, output: 15.0 },
+    'claude-haiku-4-5': { input: 1.0, cached_input: 0.1, output: 5.0 },
   },
   fallback: { input: 1.25, cached_input: 0.125, output: 10.0 },
 };
