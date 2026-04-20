@@ -30,12 +30,15 @@ If `NO_TRIAGE`: "Triage not configured. Run `/add-email-triage` to set up."
 
 ## Load Configuration
 
+Load ONLY the files you need to decide what to do this scan. Skip anything you can look up lazily — each extra file read compounds in the context window for the rest of the turn, and a single scan can push 100k+ input tokens into every subsequent LLM call.
+
 ```bash
-cat /workspace/group/email-triage/config.yaml
-cat /workspace/group/email-archive/config.yaml
-cat /workspace/group/email-archive/rules.yaml
 cat /workspace/group/email-accounts.yaml
+cat /workspace/group/email-archive/rules.yaml
+cat /workspace/group/email-triage/state/progress.yaml 2>/dev/null || echo "no progress yet"
 ```
+
+**Do NOT front-load** `user-profile.md`, `filed.jsonl`, `tasks.json`, `email-triage/config.yaml`, or `email-archive/config.yaml` at scan time. They are either large or irrelevant to the classification decision. If you actually need something from them mid-scan (e.g. a taxonomy folder mapping), read only the specific field then. `tasks.json` is the sidecar you WRITE to at the end — don't read it at scan start.
 
 ## Scan Mode
 
