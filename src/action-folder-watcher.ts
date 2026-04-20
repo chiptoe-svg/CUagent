@@ -22,6 +22,7 @@
  *   data/action-folder-seen.json — the message IDs we've already turned
  *   into tasks, so we don't re-create on each poll.
  */
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -38,8 +39,7 @@ const MAX_PER_TICK = 50;
 
 interface ActionFolderConfig {
   ms365?: { folder_id: string; folder_name?: string };
-  // Gmail support is intentionally deferred — /add-action-folder will
-  // write a `gws` stanza in the future.
+  gws?: { label_id: string; label_name?: string };
 }
 
 interface Message {
@@ -95,7 +95,7 @@ function loadConfig(mainFolder: string): ActionFolderConfig | null {
  *  dep for two nested scalars per stanza. Unknown keys are ignored. */
 function parseMiniYaml(raw: string): ActionFolderConfig {
   const out: ActionFolderConfig = {};
-  let currentProvider: 'ms365' | null = null;
+  let currentProvider: 'ms365' | 'gws' | null = null;
   for (const rawLine of raw.split('\n')) {
     const line = rawLine.replace(/#.*$/, '').replace(/\s+$/, '');
     if (!line) continue;
@@ -104,16 +104,23 @@ function parseMiniYaml(raw: string): ActionFolderConfig {
       if (k === 'ms365') {
         currentProvider = 'ms365';
         if (!out.ms365) out.ms365 = { folder_id: '' };
+      } else if (k === 'gws') {
+        currentProvider = 'gws';
+        if (!out.gws) out.gws = { label_id: '' };
       } else {
         currentProvider = null;
       }
       continue;
     }
     const m = line.match(/^\s+([a-z_]+):\s*"?([^"]*)"?\s*$/i);
-    if (m && currentProvider === 'ms365') {
-      const [, key, val] = m;
-      if (key === 'folder_id' && out.ms365) out.ms365.folder_id = val;
-      if (key === 'folder_name' && out.ms365) out.ms365.folder_name = val;
+    if (!m) continue;
+    const [, key, val] = m;
+    if (currentProvider === 'ms365' && out.ms365) {
+      if (key === 'folder_id') out.ms365.folder_id = val;
+      if (key === 'folder_name') out.ms365.folder_name = val;
+    } else if (currentProvider === 'gws' && out.gws) {
+      if (key === 'label_id') out.gws.label_id = val;
+      if (key === 'label_name') out.gws.label_name = val;
     }
   }
   return out;
@@ -198,9 +205,95 @@ async function getDefaultTodoListId(token: string): Promise<string | null> {
   }
 }
 
-function buildCleanTitle(m: Message, folderName: string): string {
+function buildCleanTitle(
+  m: Message,
+  folderName: string,
+  account: 'outlook' | 'gmail',
+): string {
   const subj = (m.subject || '(no subject)').replace(/\s+/g, ' ').trim();
-  return `${subj} → /outlook/${folderName}`;
+  return `${subj} → /${account}/${folderName}`;
+}
+
+// --- Gmail branch (shells out to gws CLI on host) ---
+//
+// Gmail uses label IDs. The watcher lists messages carrying the configured
+// label, then fetches minimal metadata for each one. No Graph equivalent of
+// "move out of folder" is used — since the label stays on the email, we
+// rely on the seen-set to avoid re-triggering on each poll.
+// gws CLI is installed at /opt/homebrew/bin/gws on macOS; use absolute path
+// because launchd doesn't always inherit Homebrew's PATH.
+
+const GWS_BIN = process.env.GWS_BIN || '/opt/homebrew/bin/gws';
+
+function runGws(args: string[]): unknown | null {
+  try {
+    const out = execFileSync(GWS_BIN, args, {
+      encoding: 'utf-8',
+      env: { ...process.env, GWS_CREDENTIAL_STORE: 'plaintext' },
+      timeout: 15_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    // gws prefixes output with "Using keyring backend: ..." on stderr, not
+    // stdout; stdout is pure JSON when --format json is used.
+    const trimmed = out.trim();
+    if (!trimmed) return null;
+    return JSON.parse(trimmed);
+  } catch (err) {
+    logger.debug({ err, args }, 'action-folder: gws call failed');
+    return null;
+  }
+}
+
+interface GmailMessage {
+  id: string;
+  subject?: string;
+  from?: string;
+}
+
+function listGmailMessages(labelId: string): GmailMessage[] {
+  const listResp = runGws([
+    'gmail',
+    'users',
+    'messages',
+    'list',
+    '--params',
+    JSON.stringify({
+      userId: 'me',
+      labelIds: [labelId],
+      maxResults: MAX_PER_TICK,
+    }),
+    '--format',
+    'json',
+  ]) as { messages?: Array<{ id: string }> } | null;
+  if (!listResp?.messages?.length) return [];
+
+  // Fetch metadata for each message — subject + from only, no body. We do
+  // this serially because gws has internal rate-limiting; MAX_PER_TICK=50
+  // caps the per-tick cost.
+  const out: GmailMessage[] = [];
+  for (const m of listResp.messages) {
+    const meta = runGws([
+      'gmail',
+      'users',
+      'messages',
+      'get',
+      '--params',
+      JSON.stringify({
+        userId: 'me',
+        id: m.id,
+        format: 'metadata',
+        metadataHeaders: ['Subject', 'From'],
+      }),
+      '--format',
+      'json',
+    ]) as { id: string; payload?: { headers?: Array<{ name: string; value: string }> } } | null;
+    if (!meta) continue;
+    const headers = meta.payload?.headers || [];
+    const subject = headers.find((h) => h.name.toLowerCase() === 'subject')?.value;
+    const from = headers.find((h) => h.name.toLowerCase() === 'from')?.value;
+    out.push({ id: meta.id, subject, from });
+  }
+  return out;
 }
 
 async function createTaskForMessage(
@@ -282,7 +375,7 @@ export function startActionFolderWatcher(deps: ActionFolderWatcherDeps): void {
       if (!main) return;
 
       const cfg = loadConfig(main.group.folder);
-      if (!cfg?.ms365?.folder_id) return; // not configured — noop
+      if (!cfg?.ms365?.folder_id && !cfg?.gws?.label_id) return; // not configured — noop
 
       const token = await getMs365AccessToken();
       if (!token) return;
@@ -290,34 +383,67 @@ export function startActionFolderWatcher(deps: ActionFolderWatcherDeps): void {
       const listId = await getDefaultTodoListId(token);
       if (!listId) return;
 
-      const folderName = cfg.ms365.folder_name || 'Action Required';
-      const messages = await listFolderMessages(token, cfg.ms365.folder_id);
-      if (messages.length === 0) return;
-
       let created = 0;
-      for (const m of messages) {
-        if (seen.has(m.id)) continue;
 
-        const title = buildCleanTitle(m, folderName);
-        const taskId = await createTaskForMessage(token, listId, title);
-        if (!taskId) continue;
+      // --- MS365 branch ---
+      if (cfg.ms365?.folder_id) {
+        const folderName = cfg.ms365.folder_name || 'Action Required';
+        const messages = await listFolderMessages(token, cfg.ms365.folder_id);
+        for (const m of messages) {
+          if (seen.has(m.id)) continue;
+          const title = buildCleanTitle(m, folderName, 'outlook');
+          const taskId = await createTaskForMessage(token, listId, title);
+          if (!taskId) continue;
 
-        writeSidecar(main.group.folder, taskId, {
-          email_id: m.id,
-          account: 'outlook',
-          from: m.from?.emailAddress?.address,
-          subject: m.subject,
-          folder: `action/${folderName}`,
-        });
+          writeSidecar(main.group.folder, taskId, {
+            email_id: m.id,
+            account: 'outlook',
+            from: m.from?.emailAddress?.address,
+            subject: m.subject,
+            folder: `action/${folderName}`,
+          });
 
-        seen.add(m.id);
-        seenList.push({ id: m.id, at: Date.now() });
-        created += 1;
+          seen.add(m.id);
+          seenList.push({ id: m.id, at: Date.now() });
+          created += 1;
+          logger.info(
+            { messageId: m.id, taskId, subject: m.subject?.slice(0, 60), src: 'ms365' },
+            'action-folder: created task from dropped email',
+          );
+        }
+      }
 
-        logger.info(
-          { messageId: m.id, taskId, subject: m.subject?.slice(0, 60) },
-          'action-folder: created task from dropped email',
-        );
+      // --- Gmail branch (shells out to gws CLI) ---
+      // All tasks still land in MS365 To Do — the user's single task surface.
+      if (cfg.gws?.label_id) {
+        const labelName = cfg.gws.label_name || 'Action Required';
+        const messages = listGmailMessages(cfg.gws.label_id);
+        for (const m of messages) {
+          if (seen.has(m.id)) continue;
+          const title = buildCleanTitle(
+            { id: m.id, subject: m.subject } as Message,
+            labelName,
+            'gmail',
+          );
+          const taskId = await createTaskForMessage(token, listId, title);
+          if (!taskId) continue;
+
+          writeSidecar(main.group.folder, taskId, {
+            email_id: m.id,
+            account: 'gmail',
+            from: m.from,
+            subject: m.subject,
+            folder: `action/${labelName}`,
+          });
+
+          seen.add(m.id);
+          seenList.push({ id: m.id, at: Date.now() });
+          created += 1;
+          logger.info(
+            { messageId: m.id, taskId, subject: m.subject?.slice(0, 60), src: 'gmail' },
+            'action-folder: created task from dropped email',
+          );
+        }
       }
 
       if (created > 0) {
