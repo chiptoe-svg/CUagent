@@ -149,6 +149,15 @@ function readMsalCache(): MsalCache | null {
   return parsed as MsalCache;
 }
 
+/**
+ * Shared MSAL access-token helper. Exported so sibling modules
+ * (action-folder-watcher, /tasks command, future Graph consumers) reuse
+ * the single token-cache + refresh path rather than re-implementing it.
+ */
+export async function getMs365AccessToken(): Promise<string | null> {
+  return getAccessToken();
+}
+
 async function getAccessToken(): Promise<string | null> {
   const conf = getClientAndTenant();
   if (!conf) return null;
@@ -178,7 +187,14 @@ async function getAccessToken(): Promise<string | null> {
           grant_type: 'refresh_token',
           client_id: conf.clientId,
           refresh_token: refresh.secret,
-          scope: 'https://graph.microsoft.com/Tasks.Read',
+          // Broad scope so one refreshed token serves the reconciler
+          // (Tasks.Read), /tasks command (Tasks.Read), and the action-
+          // folder watcher (Mail.ReadWrite, Tasks.ReadWrite) without
+          // separate refresh calls per consumer.
+          scope:
+            'https://graph.microsoft.com/Mail.ReadWrite ' +
+            'https://graph.microsoft.com/Tasks.ReadWrite ' +
+            'offline_access',
         }).toString(),
       },
     );

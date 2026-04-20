@@ -71,6 +71,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
+import { startActionFolderWatcher } from './action-folder-watcher.js';
 import { startDailyCostReport } from './cost-report-cron.js';
 import { fetchOpenTasks, startMs365Reconciler } from './ms365-reconciler.js';
 import { startSessionCleanup } from './session-cleanup.js';
@@ -1186,6 +1187,30 @@ async function main(): Promise<void> {
       }));
       for (const group of Object.values(registeredGroups)) {
         writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
+      }
+    },
+  });
+
+  // Action-folder watcher — when the user drags mail into the configured
+  // "Action Required" folder, create an MS365 todo with clean title +
+  // sidecar metadata. Shares the completion → filing loop with the main
+  // triage reconciler. No-op until /add-action-folder writes the config.
+  startActionFolderWatcher({
+    registeredGroups: () => registeredGroups,
+    onTaskCreated: () => {
+      const tasks = getAllTasks();
+      const taskRows = tasks.map((t) => ({
+        id: t.id,
+        groupFolder: t.group_folder,
+        prompt: t.prompt,
+        script: t.script || undefined,
+        schedule_type: t.schedule_type,
+        schedule_value: t.schedule_value,
+        status: t.status,
+        next_run: t.next_run,
+      }));
+      for (const g of Object.values(registeredGroups)) {
+        writeTasksSnapshot(g.folder, g.isMain === true, taskRows);
       }
     },
   });
