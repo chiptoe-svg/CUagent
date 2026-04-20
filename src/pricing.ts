@@ -20,9 +20,9 @@ export interface ModelPrice {
   output: number; // USD per 1M output tokens
   /**
    * Optional override for cached-input pricing. If unset, cached tokens
-   * are billed at half the `input` rate (OpenAI's standard cache
-   * discount). Setting this lets a user override per-model if a provider
-   * diverges from the 50% default.
+   * are billed at 10% of the `input` rate (the 90% cache discount both
+   * OpenAI and Anthropic apply to prompt-cache reads). Set this per-model
+   * if a provider publishes a different ratio.
    */
   cached_input?: number;
 }
@@ -36,17 +36,17 @@ interface PricingFile {
 const EMBEDDED_DEFAULTS: PricingFile = {
   lastUpdated: '2026-04-20 (embedded baseline — verify before relying on)',
   prices: {
-    'gpt-5.4-mini': { input: 0.25, output: 2.0 },
-    'gpt-5.4': { input: 1.25, output: 10.0 },
-    'gpt-5.3-codex': { input: 1.25, output: 10.0 },
-    'gpt-5.3-mini': { input: 0.25, output: 2.0 },
-    'gpt-5.3': { input: 5.0, output: 40.0 },
-    'claude-opus-4-7': { input: 15.0, output: 75.0 },
-    'claude-opus-4-6': { input: 15.0, output: 75.0 },
-    'claude-sonnet-4-6': { input: 3.0, output: 15.0 },
-    'claude-haiku-4-5': { input: 0.8, output: 4.0 },
+    'gpt-5.4-mini': { input: 0.25, cached_input: 0.025, output: 2.0 },
+    'gpt-5.4': { input: 1.25, cached_input: 0.125, output: 10.0 },
+    'gpt-5.3-codex': { input: 1.25, cached_input: 0.125, output: 10.0 },
+    'gpt-5.3-mini': { input: 0.25, cached_input: 0.025, output: 2.0 },
+    'gpt-5.3': { input: 5.0, cached_input: 0.5, output: 40.0 },
+    'claude-opus-4-7': { input: 15.0, cached_input: 1.5, output: 75.0 },
+    'claude-opus-4-6': { input: 15.0, cached_input: 1.5, output: 75.0 },
+    'claude-sonnet-4-6': { input: 3.0, cached_input: 0.3, output: 15.0 },
+    'claude-haiku-4-5': { input: 0.8, cached_input: 0.08, output: 4.0 },
   },
-  fallback: { input: 1.25, output: 10.0 },
+  fallback: { input: 1.25, cached_input: 0.125, output: 10.0 },
 };
 
 const CANDIDATE_PATHS = [
@@ -137,7 +137,7 @@ export function computeRunCost(params: {
 
   const price = lookupPrice(params.model);
   const cachedRate =
-    price.cached_input !== undefined ? price.cached_input : price.input * 0.5;
+    price.cached_input !== undefined ? price.cached_input : price.input * 0.1;
 
   const zero: RunCostBreakdown = {
     totalUsd: 0,
