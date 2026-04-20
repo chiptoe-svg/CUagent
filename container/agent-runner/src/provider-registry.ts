@@ -70,7 +70,13 @@ export function loadProviders(): ProviderConfig[] {
     return providers;
   }
 
-  for (const file of fs.readdirSync(PROVIDERS_DIR)) {
+  // Sort entries alphabetically — `readdirSync` returns filesystem order
+  // which varies across runs. Deterministic ordering here flows down to
+  // config.toml and the MCP tool list the model sees in its prefix, which
+  // is what OpenAI's auto-cache hashes on. A stable prefix = more cache
+  // hits on every scheduled run.
+  const entries = fs.readdirSync(PROVIDERS_DIR).sort();
+  for (const file of entries) {
     if (!file.endsWith('.json')) continue;
     try {
       const config: ProviderConfig = JSON.parse(

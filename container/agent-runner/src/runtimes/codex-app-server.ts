@@ -381,8 +381,14 @@ export function writeCodexMcpConfigToml(servers: Record<string, McpServerConfig>
   fs.mkdirSync(codexConfigDir, { recursive: true });
   const configTomlPath = path.join(codexConfigDir, 'config.toml');
 
+  // Byte-stable output across runs so OpenAI's auto-cache keeps hitting the
+  // prefix: sort server names, sort env keys within each server. MCP tool
+  // definitions downstream preserve this order into the model's system
+  // prompt, which is what the cache fingerprint hashes on.
   const lines: string[] = [];
-  for (const [name, config] of Object.entries(servers)) {
+  const serverNames = Object.keys(servers).sort();
+  for (const name of serverNames) {
+    const config = servers[name];
     lines.push(`[mcp_servers.${name}]`);
     lines.push('type = "stdio"');
     lines.push(`command = "${config.command}"`);
@@ -392,15 +398,16 @@ export function writeCodexMcpConfigToml(servers: Record<string, McpServerConfig>
     }
     if (config.env && Object.keys(config.env).length > 0) {
       lines.push(`[mcp_servers.${name}.env]`);
-      for (const [key, value] of Object.entries(config.env)) {
-        lines.push(`${key} = "${value}"`);
+      const envKeys = Object.keys(config.env).sort();
+      for (const key of envKeys) {
+        lines.push(`${key} = "${config.env[key]}"`);
       }
     }
     lines.push('');
   }
 
   fs.writeFileSync(configTomlPath, lines.join('\n'));
-  log(`Wrote MCP config.toml (${Object.keys(servers).length} servers, clean rebuild)`);
+  log(`Wrote MCP config.toml (${serverNames.length} servers, sorted)`);
 }
 
 export function createCodexConfigOverrides(baseUrl?: string | null): string[] {
