@@ -64,10 +64,11 @@ export const AVAILABLE_MODELS: Record<
   Array<{ id: string; name: string }>
 > = {
   codex: [
-    { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini — fast, light quota' },
-    { id: 'gpt-5.2', name: 'GPT-5.2 — general purpose' },
+    { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano — cheapest, scripted/deterministic work' },
+    { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini — default, fast and cheap' },
     { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex — tool/code focused' },
     { id: 'gpt-5.4', name: 'GPT-5.4 — max capability' },
+    { id: 'gpt-5.4-pro', name: 'GPT-5.4 Pro — reasoning-heavy, no caching' },
   ],
   claude: [
     { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },

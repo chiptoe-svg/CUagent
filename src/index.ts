@@ -855,6 +855,34 @@ async function main(): Promise<void> {
     await channel.sendMessage(chatJid, formatCostReport(report, 24));
   }
 
+  // Handle /refresh-pricing — re-fetch live pricing from provider pages.
+  async function handleRefreshPricingCommand(chatJid: string): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) return;
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+    await channel.sendMessage(chatJid, 'Fetching live pricing…');
+    const { refreshPricing } = await import('./pricing-refresh.js');
+    const result = await refreshPricing();
+    if (!result.ok) {
+      await channel.sendMessage(
+        chatJid,
+        `Pricing refresh failed: ${result.error || 'unknown error'}`,
+      );
+      return;
+    }
+    const lines = [
+      `*Pricing refreshed.*`,
+      `  OpenAI: ${result.openaiCount} model(s)`,
+      `  Anthropic: ${result.anthropicCount} model(s)`,
+      `  Written: \`${result.writtenPath}\``,
+    ];
+    if (result.skippedRows.length > 0) {
+      lines.push('', `_Skipped:_ ${result.skippedRows.slice(0, 3).join('; ')}`);
+    }
+    await channel.sendMessage(chatJid, lines.join('\n'));
+  }
+
   // Handle /tasks — fetch open MS365 To Do tasks directly from Graph (no agent).
   async function handleTasksCommand(chatJid: string): Promise<void> {
     const group = registeredGroups[chatJid];
@@ -1019,6 +1047,13 @@ async function main(): Promise<void> {
       if (trimmed === '/cost-report' || trimmed === '/cost') {
         handleCostReportCommand(chatJid).catch((err) =>
           logger.error({ err, chatJid }, 'Cost report command error'),
+        );
+        return;
+      }
+
+      if (trimmed === '/refresh-pricing') {
+        handleRefreshPricingCommand(chatJid).catch((err) =>
+          logger.error({ err, chatJid }, 'Refresh pricing command error'),
         );
         return;
       }
