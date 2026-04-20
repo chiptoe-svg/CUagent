@@ -820,6 +820,57 @@ server.tool(
   },
 );
 
+server.tool(
+  'log_triage_decision',
+  "Record one email-classification decision during /email-triage. CALL THIS FOR EVERY EMAIL the scan evaluates, not just ones that become tasks — the log is the basis for later benchmark comparisons across models/methodologies. Appends to the scan's decisions.jsonl; never throws on the agent path (the agent should keep going even if logging fails).",
+  {
+    email_id: z.string().describe('Provider email ID (Gmail thread id or MS Graph message id)'),
+    account: z.string().describe('Short account type: "gmail", "outlook", or "ms365"'),
+    sender: z.string().optional().describe('From address — helps benchmark review even if sender rules shift'),
+    subject: z.string().optional().describe('Subject line, truncate to ~120 chars'),
+    pass: z.enum(['A', 'B', 'C']).describe(
+      'Which classification pass resolved this email: A=rules-only (zero LLM), B=sender+subject batch, C=body-aware',
+    ),
+    decision: z.enum(['skip', 'actionable', 'uncertain']),
+    rule_matched: z.string().optional().describe('If pass=A, the rule name/category that matched (e.g. "Newsletters:bulletins@clemson.edu")'),
+    reasoning: z.string().optional().describe('One-sentence rationale for passes B/C so a human reviewer can judge the call later'),
+    task_id_created: z.string().optional().describe('If a task was created, the returned task id (MS365 todo id)'),
+    scan_run_id: z.string().optional().describe('Groups decisions by scan. Generate once per scan (e.g. ISO timestamp) and pass the same value for every email in that scan.'),
+  },
+  async (args) => {
+    try {
+      const dir = '/workspace/group/email-triage/state';
+      fs.mkdirSync(dir, { recursive: true });
+      const entry = {
+        ts: new Date().toISOString(),
+        scan_run_id: args.scan_run_id ?? null,
+        email_id: args.email_id,
+        account: args.account,
+        sender: args.sender ?? null,
+        subject: args.subject ? args.subject.slice(0, 120) : null,
+        pass: args.pass,
+        decision: args.decision,
+        rule_matched: args.rule_matched ?? null,
+        reasoning: args.reasoning ? args.reasoning.slice(0, 500) : null,
+        task_id_created: args.task_id_created ?? null,
+        model_used: process.env.NANOCLAW_MODEL ?? null,
+      };
+      fs.appendFileSync(path.join(dir, 'decisions.jsonl'), JSON.stringify(entry) + '\n');
+      return { content: [{ type: 'text' as const, text: 'Decision logged.' }] };
+    } catch (err) {
+      // Never throw — logging failure must not abort the scan.
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `log_triage_decision warning: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

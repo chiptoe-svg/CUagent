@@ -178,13 +178,15 @@ async function getDefaultTodoListId(token: string): Promise<string | null> {
       headers,
     });
     if (!r.ok) return null;
-    const lists = ((await r.json()) as {
-      value: Array<{
-        id: string;
-        displayName: string;
-        wellknownListName?: string;
-      }>;
-    }).value;
+    const lists = (
+      (await r.json()) as {
+        value: Array<{
+          id: string;
+          displayName: string;
+          wellknownListName?: string;
+        }>;
+      }
+    ).value;
     const def =
       lists.find((l) => l.wellknownListName === 'defaultList') ||
       lists.find((l) => l.displayName === 'Tasks') ||

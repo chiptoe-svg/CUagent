@@ -57,6 +57,8 @@ cat /workspace/group/email-triage/state/progress.yaml 2>/dev/null || echo "no pr
 
 **Cost invariant:** every email classified by the LLM costs real money. Emails resolvable by rule should never reach the LLM. Emails resolvable by sender+subject should never have their body fetched. Target: <20% of scanned emails reach full-body LLM classification.
 
+**Decision logging — REQUIRED.** For every email you evaluate (including ones that don't become tasks), call `mcp__nanoclaw__log_triage_decision` once. This is the basis for benchmarking — without it we can't compare your classifications against ground truth or judge whether a cheaper model could have handled a given email. The logging tool never throws; log and keep going even if a call warns. Generate a `scan_run_id` once at the start of the scan (use the ISO timestamp) and pass it on every call so the full scan is analysable as a group.
+
 1. **Load state + rules (ONCE at scan start)** — read only these:
    - `email-triage/state/progress.yaml` for `last_scan_date` per account
    - `email-archive/rules.yaml` for sender-classified rules
@@ -74,21 +76,21 @@ cat /workspace/group/email-triage/state/progress.yaml 2>/dev/null || echo "no pr
 3. **Three-pass classification — stop at the first pass that resolves each email:**
 
    **Pass A — rules-only (ZERO LLM cost).** For each email, check the sender against `email-archive/rules.yaml`:
-   - Matches a **non-actionable** category (Newsletters, Accounts, Notifications, To Delete) → **SKIP IMMEDIATELY.** Do NOT add the email to further reasoning; it's not actionable. Don't fetch body. Don't count it against the LLM quota.
-   - Matches an **actionable** category (Work, Personal) → mark as `candidate`, proceed to Pass B.
+   - Matches a **non-actionable** category (Newsletters, Accounts, Notifications, To Delete) → **SKIP IMMEDIATELY.** Do NOT add the email to further reasoning; it's not actionable. Don't fetch body. Don't count it against the LLM quota. Call `log_triage_decision` with `pass="A"`, `decision="skip"`, `rule_matched="<Category>:<sender-glob>"`.
+   - Matches an **actionable** category (Work, Personal) → mark as `candidate`, proceed to Pass B. (Log after Pass B resolves.)
    - **No rule matches** → mark as `unknown`, proceed to Pass B.
 
    Emit one log line like `Pass A: skipped N newsletters/digests, M candidates, K unknown` so the cost report can attribute savings.
 
    **Pass B — sender+subject classification (bounded LLM cost).** Only `candidate` and `unknown` items reach this pass. In ONE turn, classify each using just sender + subject:
    - **Obviously actionable** (direct request, signed-for items, meeting invites that need response, deadlines in subject) → proceed to Pass C for body fetch.
-   - **Obviously skip** (unsubscribe-only footer senders not already in rules.yaml, auto-replies, bounces) → skip; if the pattern recurs, suggest a rule via `email-archive/rules.yaml` in the final summary.
+   - **Obviously skip** (unsubscribe-only footer senders not already in rules.yaml, auto-replies, bounces) → skip; if the pattern recurs, suggest a rule via `email-archive/rules.yaml` in the final summary. Call `log_triage_decision` with `pass="B"`, `decision="skip"`, and a one-sentence `reasoning`.
    - **Uncertain from subject alone** → proceed to Pass C.
 
    **Pass C — body-aware classification (most expensive).** Only items that survived Pass B reach here. Fetch bodies ONE AT A TIME (not all at once — each body inflates the context for every subsequent call) and decide:
-   - **Clearly actionable** → create task (step 4).
-   - **Clearly not actionable** → skip.
-   - **Uncertain** → add to uncertain list (reported in summary).
+   - **Clearly actionable** → create task (step 4). After creation, log with `pass="C"`, `decision="actionable"`, `task_id_created=<id>`, and `reasoning`.
+   - **Clearly not actionable** → skip. Log with `pass="C"`, `decision="skip"`, `reasoning`.
+   - **Uncertain** → add to uncertain list (reported in summary). Log with `pass="C"`, `decision="uncertain"`, `reasoning`.
 
    If Pass A drops 60–80% of emails with zero tokens and Pass B drops another ~half of the rest without bodies, the scan should land under ~$0.10 at default model.
 
