@@ -857,16 +857,13 @@ async function main(): Promise<void> {
   }
 
   // Handle /suggest-mail-rules — show rule proposals built from the archive.
-  async function handleSuggestMailRulesCommand(
-    chatJid: string,
-  ): Promise<void> {
+  async function handleSuggestMailRulesCommand(chatJid: string): Promise<void> {
     const group = registeredGroups[chatJid];
     if (!group?.isMain) return;
     const channel = findChannel(channels, chatJid);
     if (!channel) return;
-    const { buildSuggestions, formatSuggestionsReport } = await import(
-      './mail-rule-suggester.js'
-    );
+    const { buildSuggestions, formatSuggestionsReport } =
+      await import('./mail-rule-suggester.js');
     const suggestions = buildSuggestions(group.folder);
     await channel.sendMessage(chatJid, formatSuggestionsReport(suggestions));
   }
@@ -1092,20 +1089,14 @@ async function main(): Promise<void> {
 
       if (trimmed === '/suggest-mail-rules') {
         handleSuggestMailRulesCommand(chatJid).catch((err) =>
-          logger.error(
-            { err, chatJid },
-            'Suggest mail rules command error',
-          ),
+          logger.error({ err, chatJid }, 'Suggest mail rules command error'),
         );
         return;
       }
 
       if (trimmed === '/apply-gmail-filters') {
         handleApplyGmailFiltersCommand(chatJid).catch((err) =>
-          logger.error(
-            { err, chatJid },
-            'Apply Gmail filters command error',
-          ),
+          logger.error({ err, chatJid }, 'Apply Gmail filters command error'),
         );
         return;
       }

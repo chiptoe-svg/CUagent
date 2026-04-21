@@ -222,9 +222,7 @@ export interface ApplyResult {
 
 /** Create all Gmail filters from the supplied suggestions that aren't
  *  already present and have a resolvable label id. */
-export function applyGmailFilters(
-  suggestions: RuleSuggestion[],
-): ApplyResult {
+export function applyGmailFilters(suggestions: RuleSuggestion[]): ApplyResult {
   let created = 0;
   let skipped = 0;
   const errors: string[] = [];
@@ -288,9 +286,7 @@ function fmtSuggestion(s: RuleSuggestion, i: number): string {
   return `#${i + 1} ${check} ${s.matchValue}  →  ${s.targetFolder}`;
 }
 
-export function formatSuggestionsReport(
-  suggestions: RuleSuggestion[],
-): string {
+export function formatSuggestionsReport(suggestions: RuleSuggestion[]): string {
   if (suggestions.length === 0) {
     return 'No rules found in email-archive/rules.yaml. Run `/add-email-archive` calibration first.';
   }

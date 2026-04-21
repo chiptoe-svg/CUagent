@@ -487,6 +487,37 @@ export function startMs365Reconciler(deps: Ms365ReconcilerDeps): void {
         const taskId = `ms365-reconcile-${t.id}`;
         if (getTaskById(taskId)) continue;
 
+        // Fast path: file the email directly from the host via Graph / Gmail.
+        // No agent spawn, no tokens. Falls back to the agent path below if
+        // the sidecar lacks a target folder or the archive config has no
+        // id mapping for it — we never silently drop a filing intent.
+        const { fileEmailDirect } = await import('./email-filer.js');
+        const direct = await fileEmailDirect({
+          mainFolder: main.group.folder,
+          ms365Token: token,
+          account: meta.account,
+          emailId: meta.email_id,
+          targetFolder: meta.folder,
+          taskId: t.id,
+          taskTitle: t.title,
+          subject: meta.subject,
+          from: meta.from,
+        });
+
+        if (direct.ok) {
+          filed += 1;
+          continue;
+        }
+
+        logger.info(
+          {
+            ms365TaskId: t.id,
+            reason: direct.reason,
+            account: meta.account,
+          },
+          'host-direct filing not possible — falling back to agent filing',
+        );
+
         try {
           createTask({
             id: taskId,
