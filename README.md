@@ -16,7 +16,7 @@
 
 ## About This Fork
 
-This fork adapts [NanoClaw FlexAgents](https://github.com/chiptoe-svg/nanoclaw_flexagents) for intended use in a university environment — specifically supporting curriculum development, academic advising, research operations, and department administration. The work requires operating within institutional privacy guidelines, including restricted Azure AD tenant policies, FERPA-adjacent data handling considerations, and controlled access to university email and calendar systems.
+This fork adapts [NanoClaw FlexAgents](https://github.com/chiptoe-svg/nanoclaw_flexagents) for specific use in a university environment — specifically supporting curriculum development, academic advising, research operations, and department administration. The work requires operating within institutional privacy guidelines, including restricted Azure AD tenant policies, FERPA-adjacent data handling considerations, and controlled access to university email and calendar systems.
 
 ### Active Projects
 
