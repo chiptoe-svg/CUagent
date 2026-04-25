@@ -1124,10 +1124,7 @@ async function main(): Promise<void> {
           },
           ackMessage: 'Scanning inbox — results soon.',
         }).catch((err) =>
-          logger.error(
-            { err, chatJid },
-            'Email preclassifier trigger failed',
-          ),
+          logger.error({ err, chatJid }, 'Email preclassifier trigger failed'),
         );
         return;
       }

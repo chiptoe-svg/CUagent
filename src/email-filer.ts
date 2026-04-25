@@ -29,12 +29,7 @@ interface ArchiveFolderMap {
 
 /** Minimal archive-config reader — just the folder_ids maps we need. */
 function loadArchiveFolderMap(mainFolder: string): ArchiveFolderMap {
-  const p = path.join(
-    GROUPS_DIR,
-    mainFolder,
-    'email-archive',
-    'config.yaml',
-  );
+  const p = path.join(GROUPS_DIR, mainFolder, 'email-archive', 'config.yaml');
   const out: ArchiveFolderMap = { gmail: {}, outlook: {} };
   if (!fs.existsSync(p)) return out;
   const raw = fs.readFileSync(p, 'utf-8');
@@ -103,7 +98,10 @@ async function fileMs365(
     const bodyText = await r.text();
     return { ok: false, status: r.status, error: bodyText.slice(0, 200) };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -141,7 +139,10 @@ function fileGmail(
     JSON.parse(trimmed); // validate it's a message object
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
