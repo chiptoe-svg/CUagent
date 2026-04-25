@@ -1,17 +1,67 @@
 /**
- * Host-side email pre-classifier.
+ * Host-side email pre-classifier for /email-taskfinder.
  *
- * Replaces the old "wake the agent and let it decide everything" flow for
- * /email-taskfinder. Fires on a cron schedule, walks new inbox mail, resolves
- * bucket 1 (action_templates) and bucket 2 (skip_senders) deterministically
- * without ever spawning a container. Only the residual emails — solicited /
- * personal-outreach / unsolicited — get enqueued as an agent-driven once-task
- * with the candidate list embedded in the prompt.
+ * Default flow (when OPENAI_API_KEY is set):
+ *   1. Fires on cron (or chat-trigger), walks new inbox mail metadata-only.
+ *   2. Resolves bucket 1 (action_templates) + bucket 2 (skip_senders) +
+ *      overrides deterministically — zero LLM, no container spawn.
+ *   3. For residuals: pre-fetches bodies host-side (gws CLI for Gmail, Graph
+ *      REST for Outlook), strips quoted reply chains and footer boilerplate,
+ *      caps at MAX_BODY_CHARS.
+ *   4. Calls OpenAI Chat Completions directly from this process — one call
+ *      per email, structured JSON output (response_format: json_object),
+ *      no tool access, no agent loop.
+ *   5. Validates returned sort_folder against taxonomy, sanitizes
+ *      task_title, then applies side effects: MS365 task creation, sidecar
+ *      write, decisions.jsonl append (with body_sha256 audit field),
+ *      progress.yaml update.
  *
- * Side effects done host-side: MS365 task creation (Graph REST), sidecar
- * write, decisions.jsonl append, progress.yaml update. Zero LLM tokens until
- * we hand off to the agent (and then only for the residual).
+ * Legacy fallback (when OPENAI_API_KEY is missing): batches residuals into
+ * scheduled agent tasks; the in-container agent runs the SKILL.md cascade.
+ * This path still exists but is not the default.
+ *
+ * ARCHITECTURE DECISION: residual LLM classification runs as a direct
+ * host-side fetch() to OpenAI, NOT inside a container. This breaks the
+ * project's general "model-facing cognition runs in containers" pattern.
+ *
+ * Why this is acceptable here:
+ *   - The host already lists mail and fetches bodies, so moving the API
+ *     call into a container would not shield body content from the host.
+ *   - The host already holds OPENAI_API_KEY, which is also injected into
+ *     containers via compatibility-env (src/auth/backends.ts) — so
+ *     containerization adds no new credential isolation.
+ *   - The classifier has no tool access. Its only output channel is the
+ *     four-field JSON schema (needs_task, sort_folder, task_title,
+ *     reasoning). Blast radius of a successful prompt injection is bounded
+ *     to misclassification, not code execution / data exfil / lateral
+ *     movement.
+ *   - Spawning a container per scan would add 5–15s of overhead with no
+ *     observable risk reduction.
+ *
+ * Mitigations carried in this file:
+ *   - Structured JSON output enforced via response_format.
+ *   - Host-side validation of returned sort_folder against the loaded
+ *     taxonomy (rejects off-list values).
+ *   - task_title sanitization (strips control chars and scare-prefixes
+ *     not present in the source subject).
+ *   - Body normalization strips quoted replies and footer boilerplate
+ *     before content leaves the host; cap at MAX_BODY_CHARS with an
+ *     explicit truncation marker when it fires.
+ *   - Audit trail: decisions.jsonl records body_sha256 and
+ *     body_chars_sent for every residual that crossed to OpenAI.
+ *   - Fetch timeout (20s) prevents a stuck call from hanging the scan.
+ *   - Retry budget on pending_residuals.jsonl logs a synthetic skip
+ *     decision after MAX_PENDING_ATTEMPTS so persistent failures become
+ *     visible instead of silently retrying forever.
+ *   - Scan-in-progress lock prevents overlapping cron + chat-trigger
+ *     scans from racing on tasks.json / pending_residuals.jsonl.
+ *
+ * Revisit if: the classifier gains tool access; multi-tenant deployment
+ * makes host-vs-container a real isolation boundary; institutional /
+ * FERPA posture requires all PII processing to happen in audited
+ * containers; a local-model classifier replaces the OpenAI call.
  */
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -79,14 +129,30 @@ interface EmailMinimal {
 }
 
 interface LlmCandidate extends EmailMinimal {
-  bucket_hint: 'solicited' | 'outreach_check' | 'unsolicited_check';
-  /** Pre-fetched plain-text body (capped to MAX_BODY_CHARS, HTML stripped).
-   *  Inlined in the residual agent prompt so the agent doesn't spend tool
-   *  calls on body fetches. */
+  /** Bucket hint produced by bucketHintFor(). Currently only
+   *  'solicited' or 'outreach_check' — the bucket_hint is advisory for the
+   *  classifier, not load-bearing. */
+  bucket_hint: 'solicited' | 'outreach_check';
+  /** Pre-fetched plain-text body (HTML stripped, quoted replies and footer
+   *  boilerplate removed, capped to MAX_BODY_CHARS with a truncation marker
+   *  appended when the cap fires). Inlined in the residual prompt so the
+   *  classifier never needs to fetch bodies itself. */
   body?: string;
 }
 
-const MAX_BODY_CHARS = 3000;
+/** Cap for body content shipped to the classifier. Raised from 3000 once
+ *  noise stripping (stripQuotedReply + stripFooterBoilerplate) was added —
+ *  the cap now bounds *signal*, not signal + noise. ~5000 chars ≈ 1250
+ *  tokens, well under any cost concern on gpt-5.4-mini. */
+const MAX_BODY_CHARS = 5000;
+
+/** Retry budget for pending_residuals.jsonl entries. After this many
+ *  failed handoffs (classifier returned null, MS365 task creation failed,
+ *  etc.), the email gets a synthetic skip decision logged in
+ *  decisions.jsonl and is dropped from carryover. Makes persistent
+ *  failures visible in the daily summary instead of silently retrying
+ *  forever. */
+const MAX_PENDING_ATTEMPTS = 5;
 
 interface ScanOutcome {
   scan_run_id: string;
@@ -194,6 +260,13 @@ interface PendingResidual {
   from: string;
   subject: string;
   handoff_ts: string;
+  /** ISO timestamp of the FIRST handoff for this email_id. Preserved across
+   *  carryovers so we can show the user how long the email has been stuck. */
+  first_handoff_ts: string;
+  /** Number of times this email has been handed off. Incremented on each
+   *  scan that re-attempts it. After MAX_PENDING_ATTEMPTS, the email gets
+   *  a synthetic skip decision logged and is dropped from carryover. */
+  attempt_count: number;
 }
 
 function pendingResidualsPath(mainFolder: string): string {
@@ -213,7 +286,29 @@ function loadPendingResiduals(mainFolder: string): PendingResidual[] {
   for (const line of fs.readFileSync(p, 'utf-8').split('\n')) {
     if (!line) continue;
     try {
-      out.push(JSON.parse(line) as PendingResidual);
+      // Old-format entries (pre-retry-budget) lack first_handoff_ts and
+      // attempt_count. Default them so existing carryover rolls forward
+      // without losing entries: attempt_count starts at 1 (the email is
+      // here because it was already handed off at least once),
+      // first_handoff_ts mirrors handoff_ts.
+      const raw = JSON.parse(line) as Partial<PendingResidual> & {
+        scan_run_id: string;
+        email_id: string;
+        account: 'gmail' | 'outlook';
+        from: string;
+        subject: string;
+        handoff_ts: string;
+      };
+      out.push({
+        scan_run_id: raw.scan_run_id,
+        email_id: raw.email_id,
+        account: raw.account,
+        from: raw.from,
+        subject: raw.subject,
+        handoff_ts: raw.handoff_ts,
+        first_handoff_ts: raw.first_handoff_ts ?? raw.handoff_ts,
+        attempt_count: raw.attempt_count ?? 1,
+      });
     } catch {
       /* skip malformed */
     }
@@ -386,7 +481,51 @@ function listGmail(sinceIso: string | null): EmailMinimal[] {
   return out;
 }
 
-/** Strip HTML tags, decode common entities, collapse whitespace, cap length. */
+/** Slice the body at the earliest reply-marker pattern. Quoted reply chains
+ *  are repetitive prior content the classifier doesn't need — stripping them
+ *  removes 30–50% of typical thread replies without losing signal. */
+function stripQuotedReply(s: string): string {
+  const patterns: RegExp[] = [
+    /^On .{1,200} wrote:\s*$/m, // Gmail-style
+    /^From:.{1,500}\nSent:.{1,200}\nTo:/m, // Outlook header block
+    /^-+\s*Original Message\s*-+/im, // Forwarded
+    /(?:^>.*\n){3,}/m, // 3+ consecutive quoted lines
+    /^-- $/m, // RFC 3676 sig delimiter
+  ];
+  let cut = s.length;
+  for (const p of patterns) {
+    const m = p.exec(s);
+    if (m && m.index < cut) cut = m.index;
+  }
+  return s.slice(0, cut).trim();
+}
+
+/** Conservatively strip newsletter / footer boilerplate. Only fires when
+ *  the match falls in the bottom third of the remaining body, so a real
+ *  email mentioning "unsubscribe" in its content doesn't get truncated. */
+function stripFooterBoilerplate(s: string): string {
+  if (s.length < 300) return s;
+  const threshold = Math.floor((s.length * 2) / 3);
+  const patterns: RegExp[] = [
+    /Unsubscribe/i,
+    /View (this email )?in (your )?browser/i,
+    /You (received|are receiving) this/i,
+    /© \d{4}\b/,
+    /This (message|email) (contains|may contain) confidential/i,
+  ];
+  let cut = s.length;
+  for (const p of patterns) {
+    const m = p.exec(s);
+    if (m && m.index >= threshold && m.index < cut) cut = m.index;
+  }
+  return s.slice(0, cut).trim();
+}
+
+/** Strip HTML tags, decode common entities, collapse whitespace, strip
+ *  quoted-reply chains and footer boilerplate, cap length. The truncation
+ *  marker (when the cap fires) tells the model the cut happened mid-content,
+ *  which in practice nudges it toward needs_task=true on uncertainty —
+ *  the right error direction. */
 function normalizeBody(raw: string): string {
   const noTags = raw
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -399,10 +538,20 @@ function normalizeBody(raw: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'");
-  const collapsed = decoded.replace(/\s+/g, ' ').trim();
-  return collapsed.length > MAX_BODY_CHARS
-    ? collapsed.slice(0, MAX_BODY_CHARS) + '…'
-    : collapsed;
+  // Collapse runs of spaces/tabs but preserve newlines so the strippers'
+  // line-anchored regexes can match.
+  const collapsed = decoded
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const stripped = stripFooterBoilerplate(stripQuotedReply(collapsed));
+  if (stripped.length > MAX_BODY_CHARS) {
+    return (
+      stripped.slice(0, MAX_BODY_CHARS) +
+      `\n[…body truncated, ${stripped.length} chars original]`
+    );
+  }
+  return stripped;
 }
 
 /** Gmail body fetch via gws (format=full). Prefers text/plain; falls back
@@ -741,6 +890,92 @@ function buildCleanTitle(
   return `${raw} → /${shortAccount}/${folder}`;
 }
 
+/** Validate that the model-returned sort_folder is in the loaded taxonomy.
+ *  An attacker-controlled body could prompt-inject the model into returning
+ *  an off-list folder string; that string would then flow into both the
+ *  task title and decisions.jsonl. Reject and default to a safe folder. */
+function validateSortFolder(returned: string, taxonomy: Taxonomy): string {
+  if (taxonomy.folders.length === 0) return returned; // no taxonomy configured
+  if (taxonomy.folders.includes(returned)) return returned;
+  logger.warn(
+    { returned, validCount: taxonomy.folders.length },
+    'classify-api: sort_folder not in taxonomy, defaulting to "To Delete"',
+  );
+  return taxonomy.folders.includes('To Delete')
+    ? 'To Delete'
+    : taxonomy.folders[0];
+}
+
+/** Strip control chars and (when not present in the source subject) common
+ *  scare-prefixes that an attacker-influenced body might inject into the
+ *  task title. Caps at 120 chars. */
+function sanitizeTaskTitle(raw: string, sourceSubject: string): string {
+  // eslint-disable-next-line no-control-regex
+  let t = raw.replace(/[\x00-\x1F\x7F]/g, '').trim();
+  const scare =
+    /^(URGENT|ACTION REQUIRED|IMPORTANT|ATTN|FINAL NOTICE)[:\s]\s*/i;
+  if (scare.test(t) && !scare.test(sourceSubject || '')) {
+    t = t.replace(scare, '').trim();
+  }
+  return t.slice(0, 120);
+}
+
+// ===== Scan-in-progress lock =====
+//
+// Cron-fired and chat-triggered scans both go through
+// triggerEmailPreclassifier; without coordination they can race on
+// tasks.json (read-modify-write) and pending_residuals.jsonl. The lock
+// serializes scans for a given main folder. Stale-lock recovery handles
+// the case where a previous scan crashed without releasing.
+
+const SCAN_LOCK_FILE = 'scan_in_progress.lock';
+const SCAN_LOCK_STALE_MS = 10 * 60_000;
+
+function scanLockPath(mainFolder: string): string {
+  return path.join(
+    GROUPS_DIR,
+    mainFolder,
+    'email-triage',
+    'state',
+    SCAN_LOCK_FILE,
+  );
+}
+
+function acquireScanLock(mainFolder: string): boolean {
+  const dir = path.join(GROUPS_DIR, mainFolder, 'email-triage', 'state');
+  fs.mkdirSync(dir, { recursive: true });
+  const p = scanLockPath(mainFolder);
+  try {
+    fs.writeFileSync(p, String(process.pid), { flag: 'wx' });
+    return true;
+  } catch {
+    // Lock already held — check if stale and recover.
+    try {
+      const age = Date.now() - fs.statSync(p).mtimeMs;
+      if (age > SCAN_LOCK_STALE_MS) {
+        logger.warn(
+          { ageMs: age, lockPath: p },
+          'email-preclassifier: stale scan lock detected, recovering',
+        );
+        fs.unlinkSync(p);
+        fs.writeFileSync(p, String(process.pid), { flag: 'wx' });
+        return true;
+      }
+    } catch {
+      /* lock disappeared mid-check or we lost the race — treat as held */
+    }
+    return false;
+  }
+}
+
+function releaseScanLock(mainFolder: string): void {
+  try {
+    fs.unlinkSync(scanLockPath(mainFolder));
+  } catch {
+    /* already gone */
+  }
+}
+
 // ===== Main pass =====
 
 async function runPreclassification(mainFolder: string): Promise<ScanOutcome> {
@@ -764,10 +999,45 @@ async function runPreclassification(mainFolder: string): Promise<ScanOutcome> {
 
   // Carryover: unresolved residuals from prior scans. These live in
   // pending_residuals.jsonl. Any entry whose email_id now has a decision
-  // logged is considered resolved and dropped; the remainder come forward.
+  // logged is considered resolved and dropped; the remainder partition into
+  // exhausted (attempt_count >= MAX_PENDING_ATTEMPTS — log a synthetic skip
+  // decision and drop, so the failure is visible in the daily summary
+  // instead of silently retrying forever) and active (carry forward).
   const pendingPrev = loadPendingResiduals(mainFolder);
   const resolvedIds = loadResolvedEmailIds(mainFolder, 30);
-  const carryover = pendingPrev.filter((e) => !resolvedIds.has(e.email_id));
+  const unresolved = pendingPrev.filter((e) => !resolvedIds.has(e.email_id));
+  const exhausted = unresolved.filter(
+    (e) => e.attempt_count >= MAX_PENDING_ATTEMPTS,
+  );
+  const carryover = unresolved.filter(
+    (e) => e.attempt_count < MAX_PENDING_ATTEMPTS,
+  );
+  for (const e of exhausted) {
+    appendDecision(mainFolder, {
+      scan_run_id: scanRunId,
+      email_id: e.email_id,
+      account: e.account,
+      sender: e.from,
+      subject: (e.subject || '').slice(0, 120),
+      pass: 'classify-failed',
+      decision: 'skip',
+      sort_folder: 'To Delete',
+      rule_matched: `pending_attempts_exhausted:${e.attempt_count}`,
+      reasoning: `Classifier failed ${e.attempt_count} times since ${e.first_handoff_ts}; manual review needed`,
+      task_id_created: null,
+      model_used: null,
+    });
+  }
+  if (exhausted.length > 0) {
+    logger.warn(
+      { exhausted: exhausted.length, ids: exhausted.map((e) => e.email_id) },
+      'email-preclassifier: gave up on emails after max retries',
+    );
+  }
+  // Map active carryover entries by email_id so we can preserve
+  // first_handoff_ts and increment attempt_count when we write this scan's
+  // pending file.
+  const carryoverByEmailId = new Map(carryover.map((e) => [e.email_id, e]));
 
   // Collect new mail
   const freshEmails: EmailMinimal[] = [];
@@ -1009,20 +1279,26 @@ async function runPreclassification(mainFolder: string): Promise<ScanOutcome> {
     );
   }
 
-  // Record this scan's residuals as pending. If the agent handles them
+  // Record this scan's residuals as pending. If processing handles them
   // cleanly, decisions.jsonl will catch up and the next scan's resolved-ids
-  // filter will drop them. If the agent fails mid-batch, whatever is
-  // unresolved rides into the next scan as carryover.
-  const pendingThisScan: PendingResidual[] = outcome.llm_candidates.map(
-    (c) => ({
+  // filter will drop them. If processing fails mid-batch, whatever is
+  // unresolved rides into the next scan as carryover. For carryover
+  // entries, preserve first_handoff_ts and increment attempt_count so the
+  // retry budget can fire when an email gets stuck.
+  const nowIso = new Date().toISOString();
+  const pendingThisScan: PendingResidual[] = outcome.llm_candidates.map((c) => {
+    const prior = carryoverByEmailId.get(c.id);
+    return {
       scan_run_id: scanRunId,
       email_id: c.id,
       account: c.account,
       from: c.from,
       subject: c.subject,
-      handoff_ts: new Date().toISOString(),
-    }),
-  );
+      handoff_ts: nowIso,
+      first_handoff_ts: prior?.first_handoff_ts ?? nowIso,
+      attempt_count: (prior?.attempt_count ?? 0) + 1,
+    };
+  });
   writePendingResiduals(mainFolder, pendingThisScan);
 
   return outcome;
@@ -1222,6 +1498,10 @@ async function classifyEmailWithApi(
         response_format: { type: 'json_object' },
         max_completion_tokens: 300,
       }),
+      // 20s is generous; gpt-5.4-mini classification typically finishes
+      // in ~300ms. AbortError surfaces as null below so the email stays
+      // in pending_residuals for retry.
+      signal: AbortSignal.timeout(20_000),
     });
     if (!r.ok) {
       const body = await r.text();
@@ -1288,6 +1568,21 @@ async function processResidualsWithApi(
       continue;
     }
 
+    // Validate model output before any side effect. The classifier has no
+    // tools, so its only abuse vector is influencing these strings via
+    // body content; sort_folder gets pinned to the loaded taxonomy and
+    // task_title gets sanitized.
+    const validatedFolder = validateSortFolder(result.sort_folder, taxonomy);
+
+    // Audit fields — record what crossed to OpenAI without storing the
+    // body content itself. Lets us answer "did this email's content leave
+    // the box on this date" without retaining the message text.
+    const bodyChars = (email.body || '').length;
+    const bodySha256 = crypto
+      .createHash('sha256')
+      .update(email.body || '')
+      .digest('hex');
+
     if (result.needs_task) {
       if (!(await ensureMs365())) {
         logger.warn(
@@ -1303,10 +1598,11 @@ async function processResidualsWithApi(
         result.task_title ||
         result.reasoning.split('.')[0].slice(0, 80) ||
         `Review: ${email.subject}`;
+      const sanitizedTitle = sanitizeTaskTitle(rawTitle, email.subject || '');
       const cleanTitle = buildCleanTitle(
-        rawTitle,
+        sanitizedTitle,
         email.account,
-        result.sort_folder,
+        validatedFolder,
       );
       const taskId = await createMs365Task(
         ms365Token!,
@@ -1322,10 +1618,10 @@ async function processResidualsWithApi(
         account: email.account,
         from: email.from,
         subject: email.subject,
-        folder: result.sort_folder,
+        folder: validatedFolder,
       });
       apiTaskCount += 1;
-      tasksCreated.push({ title: cleanTitle, folder: result.sort_folder });
+      tasksCreated.push({ title: cleanTitle, folder: validatedFolder });
       appendDecision(mainFolder, {
         scan_run_id: scanRunId,
         email_id: email.id,
@@ -1334,11 +1630,13 @@ async function processResidualsWithApi(
         subject: (email.subject || '').slice(0, 120),
         pass: 'api-classifier',
         decision: 'task',
-        sort_folder: result.sort_folder,
+        sort_folder: validatedFolder,
         rule_matched: email.bucket_hint,
         reasoning: result.reasoning,
         task_id_created: taskId,
         model_used: CLASSIFIER_MODEL,
+        body_sha256: bodySha256,
+        body_chars_sent: bodyChars,
       });
     } else {
       apiSkipCount += 1;
@@ -1350,11 +1648,13 @@ async function processResidualsWithApi(
         subject: (email.subject || '').slice(0, 120),
         pass: 'api-classifier',
         decision: 'skip',
-        sort_folder: result.sort_folder,
+        sort_folder: validatedFolder,
         rule_matched: email.bucket_hint,
         reasoning: result.reasoning,
         task_id_created: null,
         model_used: CLASSIFIER_MODEL,
+        body_sha256: bodySha256,
+        body_chars_sent: bodyChars,
       });
     }
   }
@@ -1447,94 +1747,121 @@ export async function triggerEmailPreclassifier(deps: {
     logger.warn('email-preclassifier: no main group registered — skipping');
     return { outcome: null, candidatesHandedOff: false };
   }
-  if (deps.ackMessage) {
-    try {
-      await deps.sendMessage(main.jid, deps.ackMessage);
-    } catch {
-      /* non-fatal */
+
+  // Serialize scans for this main folder. Cron and chat-trigger can race
+  // on tasks.json + pending_residuals.jsonl; the lock prevents that. If a
+  // scan is already running, send a friendly note instead (only when this
+  // call has an ack — cron fires don't surface).
+  if (!acquireScanLock(main.group.folder)) {
+    logger.info(
+      { folder: main.group.folder },
+      'email-preclassifier: scan already in progress, skipping this trigger',
+    );
+    if (deps.ackMessage) {
+      try {
+        await deps.sendMessage(
+          main.jid,
+          'Scan already in progress — results soon.',
+        );
+      } catch {
+        /* non-fatal */
+      }
     }
-  }
-  const outcome = await runPreclassification(main.group.folder);
-  if (outcome.llm_candidates.length === 0) {
-    await deps.sendMessage(main.jid, formatNoCandidatesFinal(outcome));
-    logger.info(
-      {
-        scanned: outcome.scanned,
-        preResolved:
-          outcome.template_tasks +
-          outcome.template_skips +
-          outcome.skip_sender_count,
-      },
-      'email-preclassifier: fully resolved host-side, no container spawned',
-    );
-    return { outcome, candidatesHandedOff: false };
+    return { outcome: null, candidatesHandedOff: false };
   }
 
-  // When OPENAI_API_KEY is present, classify residuals inline via direct API
-  // calls (one per email, ~300ms each, no container spawn). This is the
-  // preferred path — see scripts/trace-one-email.mjs for the reason Codex
-  // containers aren't used here. If the key is missing we fall through to
-  // the legacy agent-batch path.
-  if (getOpenAiApiKey()) {
-    const apiOutcome = await processResidualsWithApi(
-      main.group.folder,
-      outcome,
-      outcome.scan_run_id,
-    );
-    await deps.sendMessage(main.jid, formatFullSummary(outcome, apiOutcome));
-    logger.info(
-      {
-        scanned: outcome.scanned,
-        preResolved:
-          outcome.template_tasks +
-          outcome.template_skips +
-          outcome.skip_sender_count,
-        apiTasks: apiOutcome.apiTaskCount,
-        apiSkips: apiOutcome.apiSkipCount,
-        apiFailures: apiOutcome.apiFailureCount,
-        model: CLASSIFIER_MODEL,
-      },
-      'email-preclassifier: classified residuals via direct API',
-    );
-    return { outcome, candidatesHandedOff: false };
-  }
+  try {
+    if (deps.ackMessage) {
+      try {
+        await deps.sendMessage(main.jid, deps.ackMessage);
+      } catch {
+        /* non-fatal */
+      }
+    }
+    const outcome = await runPreclassification(main.group.folder);
+    if (outcome.llm_candidates.length === 0) {
+      await deps.sendMessage(main.jid, formatNoCandidatesFinal(outcome));
+      logger.info(
+        {
+          scanned: outcome.scanned,
+          preResolved:
+            outcome.template_tasks +
+            outcome.template_skips +
+            outcome.skip_sender_count,
+        },
+        'email-preclassifier: fully resolved host-side, no container spawned',
+      );
+      return { outcome, candidatesHandedOff: false };
+    }
 
-  // Legacy agent-batch fallback (no OPENAI_API_KEY configured).
-  const batches = chunkCandidates(outcome.llm_candidates);
-  const fireBaseSec = 15;
-  const perBatchSpacingSec = 30; // stagger so batches don't collide
-  const scanBase = Date.now();
-  batches.forEach((batch, idx) => {
-    const prompt = buildAgentPrompt(outcome, batch, idx, batches.length);
-    const fireAt = scanBase + (fireBaseSec + idx * perBatchSpacingSec) * 1000;
-    const nextIso = new Date(fireAt).toISOString();
-    createTask({
-      id: `taskfinder-residual-${scanBase}-${idx + 1}of${batches.length}`,
-      group_folder: main.group.folder,
-      chat_jid: main.jid,
-      prompt,
-      schedule_type: 'once',
-      schedule_value: nextIso,
-      context_mode: 'isolated',
-      next_run: nextIso,
-      status: 'active',
-      created_at: new Date().toISOString(),
+    // When OPENAI_API_KEY is present, classify residuals inline via direct API
+    // calls (one per email, ~300ms each, no container spawn). This is the
+    // preferred path — see scripts/trace-one-email.mjs for the reason Codex
+    // containers aren't used here. If the key is missing we fall through to
+    // the legacy agent-batch path.
+    if (getOpenAiApiKey()) {
+      const apiOutcome = await processResidualsWithApi(
+        main.group.folder,
+        outcome,
+        outcome.scan_run_id,
+      );
+      await deps.sendMessage(main.jid, formatFullSummary(outcome, apiOutcome));
+      logger.info(
+        {
+          scanned: outcome.scanned,
+          preResolved:
+            outcome.template_tasks +
+            outcome.template_skips +
+            outcome.skip_sender_count,
+          apiTasks: apiOutcome.apiTaskCount,
+          apiSkips: apiOutcome.apiSkipCount,
+          apiFailures: apiOutcome.apiFailureCount,
+          model: CLASSIFIER_MODEL,
+        },
+        'email-preclassifier: classified residuals via direct API',
+      );
+      return { outcome, candidatesHandedOff: false };
+    }
+
+    // Legacy agent-batch fallback (no OPENAI_API_KEY configured).
+    const batches = chunkCandidates(outcome.llm_candidates);
+    const fireBaseSec = 15;
+    const perBatchSpacingSec = 30; // stagger so batches don't collide
+    const scanBase = Date.now();
+    batches.forEach((batch, idx) => {
+      const prompt = buildAgentPrompt(outcome, batch, idx, batches.length);
+      const fireAt = scanBase + (fireBaseSec + idx * perBatchSpacingSec) * 1000;
+      const nextIso = new Date(fireAt).toISOString();
+      createTask({
+        id: `taskfinder-residual-${scanBase}-${idx + 1}of${batches.length}`,
+        group_folder: main.group.folder,
+        chat_jid: main.jid,
+        prompt,
+        schedule_type: 'once',
+        schedule_value: nextIso,
+        context_mode: 'isolated',
+        next_run: nextIso,
+        status: 'active',
+        created_at: new Date().toISOString(),
+      });
     });
-  });
-  logger.info(
-    {
-      scanned: outcome.scanned,
-      candidates: outcome.llm_candidates.length,
-      batches: batches.length,
-      batchSize: RESIDUAL_BATCH_SIZE,
-      preResolved:
-        outcome.template_tasks +
-        outcome.template_skips +
-        outcome.skip_sender_count,
-    },
-    'email-preclassifier: handed residual to agent in batches',
-  );
-  return { outcome, candidatesHandedOff: true };
+    logger.info(
+      {
+        scanned: outcome.scanned,
+        candidates: outcome.llm_candidates.length,
+        batches: batches.length,
+        batchSize: RESIDUAL_BATCH_SIZE,
+        preResolved:
+          outcome.template_tasks +
+          outcome.template_skips +
+          outcome.skip_sender_count,
+      },
+      'email-preclassifier: handed residual to agent in batches',
+    );
+    return { outcome, candidatesHandedOff: true };
+  } finally {
+    releaseScanLock(main.group.folder);
+  }
 }
 
 export function startEmailPreclassifier(deps: EmailPreclassifierDeps): void {

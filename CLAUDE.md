@@ -7,6 +7,7 @@ Multi-runtime personal assistant built on NanoClaw. Supports Claude, Codex (Open
 FlexAgents is based on nanoclaw v1 with multi-runtime support added in trunk. Upstream `qwibitai/nanoclaw` has since released a v2 architecture; this fork evaluated adopting it and chose not to (2026-04-18).
 
 **Non-goals:**
+
 - **Rebasing onto nanoclaw v2.** Session DBs, module registries, Chat SDK bridge, richer user/role schemas. Multi-runtime in trunk is this fork's primary feature and isn't improved by adopting v2. The divergence is deliberate, not a pending rebase.
 - **Skill-marketplace compatibility (`/add-*` feature skills).** Divergence makes `git merge upstream/skill/*` conflict-prone; marketplace skills are reference material, not installable here. Most are channel integrations we don't need anyway.
 - **Upstream's richer entity model** (users / user_roles / pending_approvals / agent_destinations). Single-user / small-team deployments don't need it.
@@ -18,6 +19,7 @@ For active institutional deployment (FERPA-aware, MS365-integrated, department o
 ## Architecture
 
 Four-layer system:
+
 1. **App Shell** — channels, state, scheduling, IPC (`src/index.ts`)
 2. **Runtime Boundary** — provider-neutral host adapters with `runtimeOptions` (`src/runtime/`)
 3. **Runtime Setup + Container Launch** — credential resolution, provider mounts, container spawning
@@ -27,60 +29,67 @@ All SDKs run inside the same container image. The agent-runner detects the runti
 
 External services (MS365, Google Workspace, IMAP) are configured as provider JSON files — no code changes needed to add or remove a provider. Provider tokens are only mounted for authorized groups.
 
+### Architectural exception — host-side LLM classifier
+
+The general rule in this codebase is that model-facing cognition runs inside containers. The `/email-taskfinder` residual classifier is the one documented exception: it runs as a direct host-side OpenAI call from `src/email-preclassifier.ts`, not inside a container. Rationale, mitigations (structured-JSON output, sort_folder taxonomy validation, task_title sanitization, body noise-stripping, fetch timeout, retry budget, audit fields, scan-in-progress lock) and revisit conditions are documented in the ADR block at the top of `src/email-preclassifier.ts`. **If you add another host-side LLM call, document it the same way.**
+
 ## Key Files
 
-| File | Purpose |
-|------|---------|
-| `src/index.ts` | Orchestrator: state, message loop, runtime invocation |
-| `src/runtime/types.ts` | AgentRuntime, ContainerManager interfaces |
-| `src/runtime/registry.ts` | SDK self-registration registry |
-| `src/runtime/claude-runtime.ts` | Claude host adapter |
-| `src/runtime/codex-runtime.ts` | Codex host adapter |
-| `src/runtime/codex-policy.ts` | Codex-specific option resolution |
-| `src/runtime/gemini-runtime.ts` | Gemini host adapter |
-| `src/runtime/container-manager.ts` | Container lifecycle management |
-| `src/container-runner.ts` | Container spawning, mounts, credential injection |
-| `src/runtime-setup.ts` | Runtime home preparation, skill sync |
-| `src/provider-registry.ts` | Host-side provider plugin loader (token mounts, startup copy) |
-| `src/auth/types.ts` | Neutral auth backend contracts |
-| `src/auth/backends.ts` | Compatibility env/file auth backends |
-| `src/channels/registry.ts` | Channel registry (self-registration at startup) |
-| `src/ipc.ts` | IPC watcher and task processing |
-| `src/config.ts` | Config: runtime, model, trigger, paths, intervals |
-| `src/credential-proxy.ts` | Anthropic credential proxy (Claude runtime) |
-| `src/task-scheduler.ts` | Runs scheduled tasks via AgentRuntime |
-| `container/providers/` | Provider JSON configs (ms365, gws, gws-mcp, imap) |
-| `scripts/gws-mcp-login.sh` | workspace-mcp OAuth login wrapper (invoked via provider-login) |
-| `container/agent-runner/src/index.ts` | In-container shared agent loop |
-| `container/agent-runner/src/runtime-registry.ts` | Container-side SDK dispatch |
-| `container/agent-runner/src/provider-registry.ts` | Container-side provider discovery (MCP, tools, init hooks, docs) |
-| `container/agent-runner/src/shared.ts` | Shared container plumbing (IO, IPC, MessageStream) |
-| `container/agent-runner/src/runtimes/claude.ts` | Claude SDK query loop |
-| `container/agent-runner/src/runtimes/codex.ts` | Codex SDK query loop |
-| `container/agent-runner/src/runtimes/gemini.ts` | Gemini ADK runtime |
-| `container/agent-runner/src/providers/gws-init.ts` | GWS credential init hook |
-| `container/agent-runner/adk/nanoclaw_agent/` | ADK agent definition (Python) |
-| `container/agent-runner/src/specialist-runner.ts` | Specialist subagent dispatch |
-| `container/agent-runner/src/ipc-mcp-stdio.ts` | MCP server for NanoClaw IPC tools |
-| `container/skills/` | Skills loaded inside agent containers |
-| `groups/{name}/AGENT.md` | Per-group agent persona (runtime-agnostic) |
-| `groups/global/AGENT.md` | Global persona shared across all groups |
-| `groups/{name}/memory/` | Persistent memory (user profile, knowledge) |
+| File                                               | Purpose                                                          |
+| -------------------------------------------------- | ---------------------------------------------------------------- |
+| `src/index.ts`                                     | Orchestrator: state, message loop, runtime invocation            |
+| `src/runtime/types.ts`                             | AgentRuntime, ContainerManager interfaces                        |
+| `src/runtime/registry.ts`                          | SDK self-registration registry                                   |
+| `src/runtime/claude-runtime.ts`                    | Claude host adapter                                              |
+| `src/runtime/codex-runtime.ts`                     | Codex host adapter                                               |
+| `src/runtime/codex-policy.ts`                      | Codex-specific option resolution                                 |
+| `src/runtime/gemini-runtime.ts`                    | Gemini host adapter                                              |
+| `src/runtime/container-manager.ts`                 | Container lifecycle management                                   |
+| `src/container-runner.ts`                          | Container spawning, mounts, credential injection                 |
+| `src/runtime-setup.ts`                             | Runtime home preparation, skill sync                             |
+| `src/provider-registry.ts`                         | Host-side provider plugin loader (token mounts, startup copy)    |
+| `src/auth/types.ts`                                | Neutral auth backend contracts                                   |
+| `src/auth/backends.ts`                             | Compatibility env/file auth backends                             |
+| `src/channels/registry.ts`                         | Channel registry (self-registration at startup)                  |
+| `src/ipc.ts`                                       | IPC watcher and task processing                                  |
+| `src/config.ts`                                    | Config: runtime, model, trigger, paths, intervals                |
+| `src/credential-proxy.ts`                          | Anthropic credential proxy (Claude runtime)                      |
+| `src/task-scheduler.ts`                            | Runs scheduled tasks via AgentRuntime                            |
+| `container/providers/`                             | Provider JSON configs (ms365, gws, gws-mcp, imap)                |
+| `scripts/gws-mcp-login.sh`                         | workspace-mcp OAuth login wrapper (invoked via provider-login)   |
+| `container/agent-runner/src/index.ts`              | In-container shared agent loop                                   |
+| `container/agent-runner/src/runtime-registry.ts`   | Container-side SDK dispatch                                      |
+| `container/agent-runner/src/provider-registry.ts`  | Container-side provider discovery (MCP, tools, init hooks, docs) |
+| `container/agent-runner/src/shared.ts`             | Shared container plumbing (IO, IPC, MessageStream)               |
+| `container/agent-runner/src/runtimes/claude.ts`    | Claude SDK query loop                                            |
+| `container/agent-runner/src/runtimes/codex.ts`     | Codex SDK query loop                                             |
+| `container/agent-runner/src/runtimes/gemini.ts`    | Gemini ADK runtime                                               |
+| `container/agent-runner/src/providers/gws-init.ts` | GWS credential init hook                                         |
+| `container/agent-runner/adk/nanoclaw_agent/`       | ADK agent definition (Python)                                    |
+| `container/agent-runner/src/specialist-runner.ts`  | Specialist subagent dispatch                                     |
+| `container/agent-runner/src/ipc-mcp-stdio.ts`      | MCP server for NanoClaw IPC tools                                |
+| `container/skills/`                                | Skills loaded inside agent containers                            |
+| `groups/{name}/AGENT.md`                           | Per-group agent persona (runtime-agnostic)                       |
+| `groups/global/AGENT.md`                           | Global persona shared across all groups                          |
+| `groups/{name}/memory/`                            | Persistent memory (user profile, knowledge)                      |
 
 ## Runtime Configuration
 
 Default runtime and model set in `.env`:
+
 ```
 DEFAULT_RUNTIME=codex
 OPENAI_MODEL=gpt-5.4-mini
 ```
 
 Per-group override via `containerConfig` in the database:
+
 ```sql
 UPDATE registered_groups SET container_config = '{"runtime":"claude","model":"claude-sonnet-4-6"}' WHERE jid = '...';
 ```
 
 Telegram commands:
+
 - `/model` — view/switch model for this group
 - `/auth` — view/switch auth mode
 - `/ping` — bot status
@@ -97,6 +106,7 @@ Telegram commands:
 ## Providers
 
 External services are configured as JSON files in `container/providers/`. On startup, defaults are copied to `~/.nanoclaw/providers/`. Each provider declares:
+
 - Token paths (host and container mount points). `requiredFile` may be an exact name or a glob (`*.json`).
 - MCP server config (or null for CLI-based providers like `gws`)
 - Allowed tools (e.g., `mcp__ms365__*`)
@@ -114,6 +124,7 @@ Provider tokens are only mounted for authorized groups (main group by default). 
 `AGENT.md` is the canonical persona file. It's runtime-agnostic.
 
 Inside the container, the agent-runner assembles the final instructions:
+
 - **Codex:** concatenates `global/AGENT.md` + `group/AGENT.md` → writes `AGENTS.md`
 - **Claude:** copies `AGENT.md` → `CLAUDE.md` for SDK discovery, injects global via system prompt
 - **Gemini (ADK):** reads `AGENT.md` directly, parses specialist sub-agents from `## Specialists` section
@@ -131,6 +142,7 @@ npm run build        # Compile TypeScript
 ```
 
 Service management (macOS):
+
 ```bash
 launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
 launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
@@ -146,35 +158,42 @@ The container buildkit caches aggressively. `--no-cache` alone does NOT invalida
 # Claude Code — Developer Guide
 
 ## Response style
+
 - Be concise and direct
 - Lead with the answer, not the reasoning
 - Use code blocks for file paths and commands
 - Don't add unnecessary commentary after tool calls
 
 ## Tool usage
+
 - Use Read, Write, Edit tools (not cat/sed/echo)
 - Use Glob and Grep (not find/grep)
 - Use Bash only for system commands and git operations
 
 ## Project memory
+
 - Memory files in `.claude/projects/-Users-tonkin-CU-agent/memory/`
 - Read MEMORY.md at start of session for project context
 - Update memory when learning important project decisions
 
 ## Hooks
+
 - Pre-commit hook runs prettier via `format:fix` script
 - Always let the hook run — don't bypass with --no-verify
 
 ## Settings
+
 - `.claude/settings.json` has project-level configuration
 - `.claude/settings.local.json` has local overrides
 
 ## Before editing code
+
 - Research the codebase before editing. Never change code you haven't read.
 - Read the file first. Understand what's there before proposing changes.
 - Check how similar features are implemented elsewhere in the codebase and follow the same pattern.
 
 ## Problem-solving approach
+
 - When a library or API seems too complex, don't give up — look for CLI flags, output format options, or intermediate approaches before concluding "can't be done"
 - Check `--help` output for every CLI tool before writing integration code
 - When facing a binary choice (full library vs crude subprocess), there's usually a third option (structured output, streaming flags, simpler API surface)
