@@ -215,14 +215,14 @@ Present ALL classifications for approval via `mcp__nanoclaw__send_message`:
   To Delete: N (expired google notifications, old adobesign)
 
 *By LLM* (N emails):
-  Sorted/GC-Student: N — "Current Internship Situation" from dynastg@g.clemson.edu
-  Sorted/SI-Operations: N — "Tour signup request" from ocarr@g.clemson.edu
-  Sorted/GC-Curriculum: N — "GC 3800 Registration" from sbaier@g.clemson.edu
-  Sorted/University-Partners: N — "Clemson Travel" from ctwomey@calpoly.edu
+  Sorted/GC-Student: N — "Current Internship Situation" from <student1>@g.clemson.edu
+  Sorted/SI-Operations: N — "Tour signup request" from <student2>@g.clemson.edu
+  Sorted/GC-Curriculum: N — "GC 3800 Registration" from <student3>@g.clemson.edu
+  Sorted/University-Partners: N — "Clemson Travel" from <external-collaborator>@example.edu
 
 *Needs your call* (N emails):
-  1. "Re: Graduate Student Applications" from santigomez82@gmail.com → Sorted/GC-Student? (0.65)
-  2. "Budget meeting" from emweise@clemson.edu → Sorted/GC-Operations? (0.72)
+  1. "Re: Graduate Student Applications" from <adjunct>@example.com → Sorted/GC-Student? (0.65)
+  2. "Budget meeting" from <colleague>@clemson.edu → Sorted/GC-Operations? (0.72)
 
 Reply *approve* to apply all, or correct items:
   *1:Sorted/GC-Operations* to override item 1

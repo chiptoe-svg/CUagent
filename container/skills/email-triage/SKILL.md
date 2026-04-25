@@ -101,7 +101,7 @@ cat /workspace/group/email-triage/state/progress.yaml 2>/dev/null || echo "no pr
    {
      "email_id": "MSG_ID",
      "account": "gmail",
-     "from": "smith@clemson.edu",
+     "from": "<faculty>@clemson.edu",
      "subject": "Budget meeting",
      "folder": "Sorted/Work"
    }
@@ -145,8 +145,8 @@ cat /workspace/group/email-triage/state/progress.yaml 2>/dev/null || echo "no pr
    Skipped (known non-actionable): N
 
    Uncertain — want reminders for any of these?
-   • "Re: Q3 budget projections" from jane@clemson.edu
-   • "Meeting notes from Tuesday" from dept-list@clemson.edu
+   • "Re: Q3 budget projections" from <colleague>@clemson.edu
+   • "Meeting notes from Tuesday" from <dept-list>@clemson.edu
 
    Pending reminders: N total (N overdue)
 

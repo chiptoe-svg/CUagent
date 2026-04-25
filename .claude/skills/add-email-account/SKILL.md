@@ -32,8 +32,8 @@ test -f "groups/${MAIN_FOLDER}/email-accounts.yaml" && cat "groups/${MAIN_FOLDER
 If accounts exist, show them:
 
 > Registered email accounts:
-> 1. gmail — Google Workspace (tonkin@g.clemson.edu) ✓
-> 2. outlook — Microsoft 365 (tonkin@clemson.edu) ✓
+> 1. gmail — Google Workspace (<user>@g.clemson.edu) ✓
+> 2. outlook — Microsoft 365 (<user>@clemson.edu) ✓
 >
 > What would you like to do?
 > - **Add** another account
@@ -264,7 +264,7 @@ Call mcp__ms365__list-mail-messages to get 3 recent messages.
 **imap:** Skip verification for now if no IMAP tool is available.
 
 Report:
-> ✓ Connected to tonkin@g.clemson.edu (Gmail)
+> ✓ Connected to <user>@g.clemson.edu (Gmail)
 > Found 3 recent messages — account is working.
 
 ### Step 5: Save account
@@ -279,13 +279,13 @@ Write or update `groups/${MAIN_FOLDER}/email-accounts.yaml`:
 accounts:
   - id: gmail
     type: gws_mcp
-    address: tonkin@g.clemson.edu
+    address: <user>@g.clemson.edu
     enabled: true
     added: "2026-04-18"
 
   - id: outlook
     type: ms365
-    address: tonkin@clemson.edu
+    address: <user>@clemson.edu
     enabled: true
     added: "2026-04-18"
 ```

@@ -71,8 +71,8 @@ Read the accounts from `email-accounts.yaml` and present:
 
 > Which accounts should triage scan?
 >
-> 1. gmail (gws) — tonkin@g.clemson.edu
-> 2. outlook (ms365) — tonkin@clemson.edu
+> 1. gmail (gws) — <user>@g.clemson.edu
+> 2. outlook (ms365) — <user>@clemson.edu
 >
 > Default: all. Or pick specific ones.
 

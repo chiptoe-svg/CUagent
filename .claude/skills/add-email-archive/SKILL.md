@@ -36,8 +36,8 @@ Stop here.
 
 If accounts exist, list them:
 > Found N registered email account(s):
-> - gmail (gws) — tonkin@g.clemson.edu
-> - outlook (ms365) — tonkin@clemson.edu
+> - gmail (gws) — <user>@g.clemson.edu
+> - outlook (ms365) — <user>@clemson.edu
 >
 > Which accounts should be included in the archive? (default: all)
 
