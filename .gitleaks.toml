@@ -1,0 +1,26 @@
+# Gitleaks configuration for CUagent
+#
+# Inherits the default ruleset and adds an allowlist for known-safe patterns
+# that are flagged by default rules but are NOT secrets.
+#
+# Used by:
+#   - The husky pre-commit hook (scans staged changes only)
+#   - On-demand history scans: `gitleaks git --no-banner -v`
+#
+# Add new allowlist regexes when a confirmed false-positive surfaces, e.g.
+# placeholder strings in skill docs, public-by-design API keys, etc.
+
+title = "CUagent gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlist — known-safe patterns flagged as false positives by default rules"
+regexes = [
+  # PostHog public project API keys (phc_*) are write-only ingestion tokens
+  # designed to be embedded in client code. Per PostHog docs:
+  # https://posthog.com/docs/api — "Public project API keys are safe to use
+  # in production code." Different from phx_* private keys.
+  '''phc_[a-zA-Z0-9]{40,}''',
+]
