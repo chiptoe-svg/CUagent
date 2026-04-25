@@ -533,9 +533,13 @@ export async function runContainerAgent(
     let timedOut = false;
     let hadStreamingOutput = false;
     const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
-    // Grace period: hard timeout must be at least IDLE_TIMEOUT + 30s so the
-    // graceful _close sentinel has time to trigger before the hard kill fires.
-    const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
+    // Scheduled tasks close promptly after result (TASK_CLOSE_DELAY_MS),
+    // so they don't need the IDLE_TIMEOUT grace and the configured cap
+    // applies as-is. Interactive sessions still need the grace period so
+    // the _close sentinel can fire before a hard kill.
+    const timeoutMs = input.isScheduledTask
+      ? configTimeout
+      : Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
 
     const killOnTimeout = () => {
       timedOut = true;
@@ -580,6 +584,18 @@ export async function runContainerAgent(
             `Duration: ${duration}ms`,
             `Exit Code: ${code}`,
             `Had Streaming Output: ${hadStreamingOutput}`,
+            `Stdout Truncated: ${stdoutTruncated}`,
+            `Stderr Truncated: ${stderrTruncated}`,
+            ``,
+            `=== Input Summary ===`,
+            `Prompt length: ${input.prompt.length} chars`,
+            `Session ID: ${input.sessionId || 'new'}`,
+            ``,
+            `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
+            stderr,
+            ``,
+            `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
+            stdout,
           ].join('\n'),
         );
 
@@ -632,8 +648,14 @@ export async function runContainerAgent(
       ];
 
       const isError = code !== 0;
+      // Always dump full I/O for scheduled tasks — Codex's "Turn timed out"
+      // reports exit code 0 but the run is a logical failure. Without this,
+      // the log file is too sparse to debug. User chat content doesn't
+      // travel through scheduled-task stderr so the usual privacy concern
+      // doesn't apply here.
+      const isScheduled = input.isScheduledTask === true;
 
-      if (isVerbose || isError) {
+      if (isVerbose || isError || isScheduled) {
         // On error, log input metadata only — not the full prompt.
         // Full input is only included at verbose level to avoid
         // persisting user conversation content on every non-zero exit.

@@ -434,7 +434,7 @@ function findMainGroup(
 
 function buildFilingPrompt(task: TodoTask, meta: EmailMetadata): string {
   return [
-    `The user tap-completed a Microsoft 365 to-do that was created by email-triage.`,
+    `The user tap-completed a Microsoft 365 to-do that was created by /email-taskfinder.`,
     `File the associated email silently — do not send a chat message. Append the filing record to /workspace/group/email-triage/state/filed.jsonl.`,
     ``,
     `Task:`,

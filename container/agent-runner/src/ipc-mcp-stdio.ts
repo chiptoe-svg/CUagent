@@ -822,20 +822,21 @@ server.tool(
 
 server.tool(
   'log_triage_decision',
-  "Record one email-classification decision during /email-triage. CALL THIS FOR EVERY EMAIL the scan evaluates, not just ones that become tasks — the log is the basis for later benchmark comparisons across models/methodologies. Appends to the scan's decisions.jsonl; never throws on the agent path (the agent should keep going even if logging fails).",
+  "Record one email-classification decision during /email-taskfinder. CALL THIS FOR EVERY EMAIL the scan evaluates, not just ones that become tasks — the log is the basis for /fix-triage corrections and for benchmark comparisons across models/methodologies. Appends to the scan's decisions.jsonl; never throws on the agent path (the agent should keep going even if logging fails).",
   {
     email_id: z.string().describe('Provider email ID (Gmail thread id or MS Graph message id)'),
     account: z.string().describe('Short account type: "gmail", "outlook", or "ms365"'),
-    sender: z.string().optional().describe('From address — helps benchmark review even if sender rules shift'),
+    sender: z.string().optional().describe('From address — helps review even if sender rules shift'),
     subject: z.string().optional().describe('Subject line, truncate to ~120 chars'),
-    pass: z.enum(['A', 'B', 'C']).describe(
-      'Which classification pass resolved this email: A=rules-only (zero LLM), B=sender+subject batch, C=body-aware',
+    pass: z.string().describe(
+      'Which bucket resolved this email in the v2 four-bucket cascade: "template" (action_templates match, zero-LLM), "skip" (skip_senders match, zero-LLM), "solicited" (LLM, known_contacts/institutions/thread), "outreach" (LLM, personal-outreach heuristic), or "unsolicited" (label-only, zero-LLM).',
     ),
-    decision: z.enum(['skip', 'actionable', 'uncertain']),
-    rule_matched: z.string().optional().describe('If pass=A, the rule name/category that matched (e.g. "Newsletters:bulletins@clemson.edu")'),
-    reasoning: z.string().optional().describe('One-sentence rationale for passes B/C so a human reviewer can judge the call later'),
-    task_id_created: z.string().optional().describe('If a task was created, the returned task id (MS365 todo id)'),
-    scan_run_id: z.string().optional().describe('Groups decisions by scan. Generate once per scan (e.g. ISO timestamp) and pass the same value for every email in that scan.'),
+    decision: z.string().describe('Outcome: "task" (created a to-do), "skip" (no task, not labeled — skip_senders path), or "label-only" (no task, labeled triage:archived — unsolicited path).'),
+    sort_folder: z.string().optional().describe('The folder this email will eventually be filed into by /email-triage. Required on every log line in v2 — populate even when decision=skip so the future filing sweep has the hint.'),
+    rule_matched: z.string().optional().describe('Specific rule that matched: template name, skip_senders sender glob, or the heuristic signals that fired.'),
+    reasoning: z.string().optional().describe('One-sentence rationale — lets a human reviewer judge the call later.'),
+    task_id_created: z.string().optional().describe('If a task was created, the returned task id (MS365 todo id).'),
+    scan_run_id: z.string().optional().describe('Groups decisions by scan. Generate once per scan (ISO timestamp) and pass the same value for every email in that scan.'),
   },
   async (args) => {
     try {
@@ -850,6 +851,7 @@ server.tool(
         subject: args.subject ? args.subject.slice(0, 120) : null,
         pass: args.pass,
         decision: args.decision,
+        sort_folder: args.sort_folder ?? null,
         rule_matched: args.rule_matched ?? null,
         reasoning: args.reasoning ? args.reasoning.slice(0, 500) : null,
         task_id_created: args.task_id_created ?? null,

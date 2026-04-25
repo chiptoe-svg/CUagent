@@ -190,15 +190,21 @@ async function runTask(
   const sessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
-  // Per-task model override — clone the group with the override applied so
-  // the runtime reads it through the standard containerConfig path without
-  // mutating the shared group registration.
-  const effectiveGroup: RegisteredGroup = task.model_override
+  // Per-task overrides — model and/or timeout. Taskfinder residual batches
+  // get a tight 8-min container cap so a slow scan fails fast and carryover
+  // picks up the rest, instead of burning the default 30-min ceiling.
+  const taskTimeoutMs = task.id.startsWith('taskfinder-residual-')
+    ? 8 * 60 * 1000
+    : undefined;
+  const needsOverride =
+    Boolean(task.model_override) || taskTimeoutMs !== undefined;
+  const effectiveGroup: RegisteredGroup = needsOverride
     ? {
         ...group,
         containerConfig: {
           ...(group.containerConfig || {}),
-          model: task.model_override,
+          ...(task.model_override ? { model: task.model_override } : {}),
+          ...(taskTimeoutMs !== undefined ? { timeout: taskTimeoutMs } : {}),
         },
       }
     : group;
@@ -310,17 +316,52 @@ async function runTask(
       : 'Completed';
   updateTaskAfterRun(task.id, nextRun, resultSummary);
 
-  // Circuit breaker — pause the task if the last N runs all looked bad. The
-  // current run is already in task_run_logs, so it counts. Only trips for
-  // recurring tasks; one-shot tasks already auto-complete.
+  // Failure-recovery: taskfinder residual batches that error must surface
+  // SOMETHING to the user so silence isn't the outcome of a timeout. The
+  // preclassifier already created tasks for bucket 1/2 hits; the agent may
+  // have created some for the residuals before dying. Tell Chip what's
+  // known and what's not.
+  if (error && task.id.startsWith('taskfinder-residual-')) {
+    try {
+      await deps.sendMessage(
+        task.chat_jid,
+        `⚠️ Taskfinder residual batch \`${task.id}\` failed: ${error}.\n` +
+          `The pre-classifier's tasks are already in MS365; any tasks the agent ` +
+          `created before the failure are also persisted. Remaining residuals ` +
+          `were NOT classified — rerun \`/email-taskfinder\` to pick them up.`,
+      );
+    } catch (sendErr) {
+      logger.warn(
+        { sendErr, taskId: task.id },
+        'Could not send taskfinder failure-recovery message',
+      );
+    }
+  }
+
+  // Circuit breaker — pause the task on:
+  //   (a) one run that breached the token OR duration ceiling (catastrophic —
+  //       no point waiting for a 2nd identical bonfire), OR
+  //   (b) N consecutive plain-error runs (transient errors need a 2nd proof
+  //       before we stop trying).
+  // Only trips for recurring tasks; one-shot tasks already auto-complete.
   if (task.schedule_type !== 'once') {
+    const thisRun = {
+      status: error ? 'error' : 'completed',
+      exit_code: metrics?.exitCode ?? null,
+      input_tokens: metrics?.inputTokens ?? null,
+      duration_ms: durationMs,
+    };
+    const ceilingBreach =
+      (thisRun.input_tokens ?? 0) > CIRCUIT_INPUT_TOKEN_CEILING ||
+      thisRun.duration_ms > CIRCUIT_DURATION_MS_CEILING;
     const recent = getRecentTaskRuns(task.id, CIRCUIT_CONSECUTIVE_FAILURES);
-    if (
+    const consecutiveBad =
       recent.length >= CIRCUIT_CONSECUTIVE_FAILURES &&
-      recent.every(runLookedBad)
-    ) {
+      recent.every(runLookedBad);
+    if (ceilingBreach || consecutiveBad) {
       updateTask(task.id, { status: 'paused' });
-      const reasons = recent
+      const runs = ceilingBreach ? [thisRun] : recent;
+      const reasons = runs
         .map((r, i) => {
           const flags: string[] = [];
           if (r.status === 'error') flags.push('error');
@@ -332,14 +373,17 @@ async function runTask(
           return `  ${i + 1}. ${flags.join(', ') || 'bad'}`;
         })
         .join('\n');
+      const trigger = ceilingBreach
+        ? 'single-run ceiling breach'
+        : `${CIRCUIT_CONSECUTIVE_FAILURES} consecutive bad runs`;
       logger.warn(
-        { taskId: task.id, prompt: task.prompt.slice(0, 80) },
+        { taskId: task.id, trigger, prompt: task.prompt.slice(0, 80) },
         'Circuit breaker tripped — auto-paused task',
       );
       try {
         await deps.sendMessage(
           task.chat_jid,
-          `⚠️ Auto-paused scheduled task \`${task.prompt.slice(0, 60)}\` — ${CIRCUIT_CONSECUTIVE_FAILURES} consecutive bad runs:\n${reasons}\n\nResume with the /task tool once fixed.`,
+          `⚠️ Auto-paused scheduled task \`${task.prompt.slice(0, 60)}\` — ${trigger}:\n${reasons}\n\nResume with the /task tool once fixed.`,
         );
       } catch (err) {
         logger.warn({ err }, 'Could not notify chat of circuit trip');

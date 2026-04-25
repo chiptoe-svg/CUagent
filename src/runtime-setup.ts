@@ -42,15 +42,37 @@ export interface RuntimeSetup {
 
 // --- Shared helpers ---
 
-/** Sync skill directories from host container/skills/ into a target dir. */
+/** Sync skill directories from host container/skills/ into a target dir.
+ *  Additive copy PLUS pruning of stale entries — when a skill is renamed or
+ *  removed at the source, the corresponding destination folder is deleted so
+ *  the agent doesn't pick the old one by mistake. Skipped if the source has
+ *  zero skills (safety net against a misconfig wiping a session dir). */
 function syncSkills(dstDir: string, projectRoot: string): void {
   const srcDir = path.join(projectRoot, 'container', 'skills');
   if (!fs.existsSync(srcDir)) return;
-  for (const entry of fs.readdirSync(srcDir)) {
-    const s = path.join(srcDir, entry);
-    if (fs.statSync(s).isDirectory()) {
-      fs.cpSync(s, path.join(dstDir, entry), { recursive: true });
+  const sourceSkills = new Set(
+    fs
+      .readdirSync(srcDir)
+      .filter((e) => fs.statSync(path.join(srcDir, e)).isDirectory()),
+  );
+  if (sourceSkills.size === 0) return;
+  if (fs.existsSync(dstDir)) {
+    for (const entry of fs.readdirSync(dstDir)) {
+      const full = path.join(dstDir, entry);
+      if (sourceSkills.has(entry)) continue;
+      try {
+        if (fs.statSync(full).isDirectory()) {
+          fs.rmSync(full, { recursive: true, force: true });
+        }
+      } catch {
+        /* tolerate races / permission oddities — next run will retry */
+      }
     }
+  }
+  for (const entry of sourceSkills) {
+    fs.cpSync(path.join(srcDir, entry), path.join(dstDir, entry), {
+      recursive: true,
+    });
   }
 }
 

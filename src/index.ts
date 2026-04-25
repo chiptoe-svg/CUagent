@@ -72,8 +72,14 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startActionFolderWatcher } from './action-folder-watcher.js';
+import { startContactsHarvester } from './contacts-harvester.js';
 import { startDailyCostReport } from './cost-report-cron.js';
+import {
+  startEmailPreclassifier,
+  triggerEmailPreclassifier,
+} from './email-preclassifier.js';
 import { fetchOpenTasks, startMs365Reconciler } from './ms365-reconciler.js';
+import { startUnsolicitedSummary } from './unsolicited-summary-cron.js';
 import { startSessionCleanup } from './session-cleanup.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -1101,6 +1107,31 @@ async function main(): Promise<void> {
         return;
       }
 
+      // /email-taskfinder routes through the host-side preclassifier (same
+      // path as the scheduled cron). Bucket 1/2 resolve deterministically;
+      // residuals classify via direct API call when OPENAI_API_KEY is set.
+      // No container spawn unless the legacy agent fallback fires.
+      if (
+        trimmed === '/email-taskfinder' ||
+        trimmed === '/email-taskfinder scan' ||
+        trimmed === '/email-taskfinder now'
+      ) {
+        triggerEmailPreclassifier({
+          registeredGroups: () => registeredGroups,
+          sendMessage: async (jid: string, text: string) => {
+            const channel = findChannel(channels, jid);
+            if (channel) await channel.sendMessage(jid, text);
+          },
+          ackMessage: 'Scanning inbox — results soon.',
+        }).catch((err) =>
+          logger.error(
+            { err, chatJid },
+            'Email preclassifier trigger failed',
+          ),
+        );
+        return;
+      }
+
       // Sender allowlist drop mode: discard messages from denied senders before storing
       if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
@@ -1254,6 +1285,41 @@ async function main(): Promise<void> {
       for (const g of Object.values(registeredGroups)) {
         writeTasksSnapshot(g.folder, g.isMain === true, taskRows);
       }
+    },
+  });
+
+  // Contacts harvester — daily scan of sent-folder for new addresses, used
+  // by /email-taskfinder to treat outbound-corresponded senders as solicited.
+  startContactsHarvester({
+    registeredGroups: () => registeredGroups,
+  });
+
+  // Email pre-classifier — host-side bucket 1/2 resolver + direct-API LLM
+  // for residuals when OPENAI_API_KEY is set. Replaces the old DB-cron
+  // /email-taskfinder trigger with an in-process scheduled fire.
+  const preclassExpressions = (
+    process.env.EMAIL_TASKFINDER_CRON || '0 7 * * *,30 16 * * *'
+  )
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  startEmailPreclassifier({
+    cronExpressions: preclassExpressions,
+    registeredGroups: () => registeredGroups,
+    sendMessage: async (jid: string, text: string) => {
+      const channel = findChannel(channels, jid);
+      if (channel) await channel.sendMessage(jid, text);
+    },
+  });
+
+  // Daily unsolicited-summary report — reads last 24h of decisions.jsonl,
+  // groups by sender, surfaces what got labeled triage:archived for review.
+  startUnsolicitedSummary({
+    cronExpr: process.env.UNSOLICITED_SUMMARY_CRON || '0 8 * * *',
+    registeredGroups: () => registeredGroups,
+    sendMessage: async (jid: string, text: string) => {
+      const channel = findChannel(channels, jid);
+      if (channel) await channel.sendMessage(jid, text);
     },
   });
 
