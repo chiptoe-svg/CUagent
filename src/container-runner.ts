@@ -28,6 +28,8 @@ import {
 } from './container-runtime.js';
 import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { evaluateAiProvider } from './policy/access-permissions.js';
+import { PolicyDeniedError } from './policy/errors.js';
 import { getProviderMounts, loadProviders } from './provider-registry.js';
 import { getRuntimeSetup } from './runtime-setup.js';
 import { RegisteredGroup } from './types.js';
@@ -395,10 +397,41 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
+  const runtime = getRuntime(group);
+
+  // Access-permissions gate: confirm the configured runtime is allowed by
+  // ai_providers. In strict mode, a denied runtime throws PolicyDeniedError
+  // and the container is never spawned. In telemetry-only mode, the
+  // would-be-denial is logged and the spawn proceeds — preserves the
+  // current install's behavior while surfacing drift in the audit log.
+  const providerDecision = evaluateAiProvider(runtime);
+  if (!providerDecision.allow) {
+    if (providerDecision.enforced) {
+      logger.warn(
+        {
+          group: group.name,
+          runtime,
+          reasonCode: providerDecision.reasonCode,
+          message: providerDecision.message,
+        },
+        'container-runner: access-permissions policy denied container spawn',
+      );
+      throw new PolicyDeniedError(providerDecision);
+    }
+    logger.info(
+      {
+        group: group.name,
+        runtime,
+        reasonCode: providerDecision.reasonCode,
+        message: providerDecision.message,
+      },
+      'container-runner: access-permissions would have denied (telemetry-only) — proceeding',
+    );
+  }
+
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const runtime = getRuntime(group);
   const image = getContainerImage(runtime);
   const containerArgs = buildContainerArgs(
     mounts,

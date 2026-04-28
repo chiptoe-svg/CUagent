@@ -78,6 +78,18 @@ vi.mock('./credential-proxy.js', () => ({
   detectAuthMode: vi.fn(() => 'api-key'),
 }));
 
+// Mock access-permissions policy: tests here don't exercise the policy layer.
+// A permissive allow keeps runContainerAgent flowing; the policy module's
+// own tests live in src/policy/access-permissions.test.ts.
+vi.mock('./policy/access-permissions.js', () => ({
+  evaluateAiProvider: vi.fn(() => ({
+    allow: true,
+    reasonCode: 'ai_provider_allowed',
+    message: 'allowed (test mock)',
+    enforced: false,
+  })),
+}));
+
 // Create a controllable fake ChildProcess
 function createFakeProcess() {
   const proc = new EventEmitter() as EventEmitter & {

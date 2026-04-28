@@ -73,6 +73,7 @@ import { createTask } from './db.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { getMs365AccessToken } from './ms365-reconciler.js';
+import { evaluateHostAiOperation } from './policy/access-permissions.js';
 import { RegisteredGroup } from './types.js';
 
 export interface EmailPreclassifierDeps {
@@ -1437,6 +1438,37 @@ async function classifyEmailWithApi(
 ): Promise<ClassificationResult | null> {
   const apiKey = getOpenAiApiKey();
   if (!apiKey) return null;
+
+  // Access-permissions gate: confirm the host_ai_operations registry permits
+  // this specific call. In strict mode, a denial returns null (treated as a
+  // per-email classifier failure — email stays in pending_residuals for the
+  // retry budget to handle). In telemetry-only mode, the would-be-denial is
+  // logged and the call proceeds.
+  const policyDecision = evaluateHostAiOperation('email_residual_classifier', {
+    endpoint: 'api.openai.com',
+    bodyChars: (email.body || '').length,
+  });
+  if (!policyDecision.allow) {
+    if (policyDecision.enforced) {
+      logger.warn(
+        {
+          emailId: email.id,
+          reasonCode: policyDecision.reasonCode,
+          message: policyDecision.message,
+        },
+        'classify-api: access-permissions policy denied — skipping AI call',
+      );
+      return null;
+    }
+    logger.info(
+      {
+        emailId: email.id,
+        reasonCode: policyDecision.reasonCode,
+        message: policyDecision.message,
+      },
+      'classify-api: access-permissions would have denied (telemetry-only) — proceeding',
+    );
+  }
 
   const folderBullets = taxonomy.folders
     .map((f) => {
