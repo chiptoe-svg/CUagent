@@ -29,6 +29,8 @@ import path from 'path';
 import { DATA_DIR, GROUPS_DIR } from './config.js';
 import { logger } from './logger.js';
 import { getMs365AccessToken } from './ms365-reconciler.js';
+import { PolicyDeniedError } from './policy/errors.js';
+import { enforceM365Operation } from './policy/m365-operations.js';
 import { RegisteredGroup } from './types.js';
 
 const STATE_FILE = path.join(DATA_DIR, 'action-folder-seen.json');
@@ -161,6 +163,9 @@ async function listFolderMessages(
     `?$select=id,subject,from,receivedDateTime,bodyPreview` +
     `&$orderby=receivedDateTime desc&$top=${MAX_PER_TICK}`;
   try {
+    enforceM365Operation('read_mail', {
+      graphPath: `/me/mailFolders/${folderId}/messages`,
+    });
     const r = await fetch(url, { headers });
     if (!r.ok) {
       logger.debug(
@@ -170,7 +175,8 @@ async function listFolderMessages(
       return [];
     }
     return ((await r.json()) as { value: Message[] }).value || [];
-  } catch {
+  } catch (err) {
+    if (err instanceof PolicyDeniedError) return [];
     return [];
   }
 }
@@ -181,6 +187,7 @@ async function getDefaultTodoListId(token: string): Promise<string | null> {
   if (cachedDefaultListId) return cachedDefaultListId;
   const headers = { Authorization: `Bearer ${token}` };
   try {
+    enforceM365Operation('read_task', { graphPath: '/me/todo/lists' });
     const r = await fetch('https://graph.microsoft.com/v1.0/me/todo/lists', {
       headers,
     });
@@ -324,6 +331,9 @@ async function createTaskForMessage(
     dueDateTime: { dateTime: due.toISOString().slice(0, 19), timeZone: 'UTC' },
   };
   try {
+    enforceM365Operation('write_task', {
+      graphPath: `/me/todo/lists/${listId}/tasks`,
+    });
     const r = await fetch(
       `https://graph.microsoft.com/v1.0/me/todo/lists/${listId}/tasks`,
       { method: 'POST', headers, body: JSON.stringify(body) },

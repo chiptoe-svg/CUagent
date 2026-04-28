@@ -27,6 +27,9 @@ import path from 'path';
 import { DATA_DIR, GROUPS_DIR } from './config.js';
 import { createTask, getTaskById } from './db.js';
 import { logger } from './logger.js';
+import { PolicyDeniedError } from './policy/errors.js';
+import { enforceGrantedM365Scopes } from './policy/granted-scopes.js';
+import { enforceM365Operation } from './policy/m365-operations.js';
 import { RegisteredGroup } from './types.js';
 
 const TOKEN_CACHE_PATH = path.join(
@@ -158,6 +161,11 @@ export async function getMs365AccessToken(): Promise<string | null> {
   return getAccessToken();
 }
 
+/** Cached granted-scope string from the most recent token refresh. Used to
+ *  skip re-validation when the granted scopes haven't changed. Reset on
+ *  module reload (tests + dev). */
+let lastValidatedScopes: string | null = null;
+
 async function getAccessToken(): Promise<string | null> {
   const conf = getClientAndTenant();
   if (!conf) return null;
@@ -208,9 +216,21 @@ async function getAccessToken(): Promise<string | null> {
       );
       return null;
     }
-    const data = (await resp.json()) as { access_token?: string };
+    const data = (await resp.json()) as {
+      access_token?: string;
+      scope?: string;
+    };
+    // Validate granted scopes against denied_scopes. Cached per scope-string
+    // so we only emit logs / throw when the granted-scope set actually
+    // changes between refreshes.
+    if (data.scope && data.scope !== lastValidatedScopes) {
+      lastValidatedScopes = data.scope;
+      const grantedList = data.scope.split(/\s+/).filter(Boolean);
+      enforceGrantedM365Scopes(grantedList);
+    }
     return data.access_token ?? null;
   } catch (err) {
+    if (err instanceof PolicyDeniedError) throw err;
     logger.debug({ err }, 'ms365 reconciler: token endpoint unreachable');
     return null;
   }
@@ -224,12 +244,14 @@ async function fetchRecentlyCompleted(token: string): Promise<TodoTask[]> {
 
   let lists: Array<{ id: string }> = [];
   try {
+    enforceM365Operation('read_task', { graphPath: '/me/todo/lists' });
     const r = await fetch('https://graph.microsoft.com/v1.0/me/todo/lists', {
       headers,
     });
     if (!r.ok) return [];
     lists = ((await r.json()) as { value: Array<{ id: string }> }).value || [];
-  } catch {
+  } catch (err) {
+    if (err instanceof PolicyDeniedError) return [];
     return [];
   }
 
@@ -237,6 +259,9 @@ async function fetchRecentlyCompleted(token: string): Promise<TodoTask[]> {
   const filter = `status eq 'completed' and completedDateTime/dateTime ge '${cutoff}'`;
   for (const list of lists) {
     try {
+      enforceM365Operation('read_task', {
+        graphPath: `/me/todo/lists/${list.id}/tasks`,
+      });
       const url =
         `https://graph.microsoft.com/v1.0/me/todo/lists/${list.id}/tasks` +
         `?$filter=${encodeURIComponent(filter)}&$top=50`;
@@ -245,7 +270,7 @@ async function fetchRecentlyCompleted(token: string): Promise<TodoTask[]> {
       const tasks = ((await r.json()) as { value: TodoTask[] }).value || [];
       all.push(...tasks);
     } catch {
-      /* per-list failure shouldn't kill the tick */
+      /* per-list failure (network or policy) shouldn't kill the tick */
     }
   }
   return all;
@@ -267,6 +292,7 @@ export async function fetchOpenTasks(): Promise<OpenTask[] | null> {
     wellknownListName?: string;
   }> = [];
   try {
+    enforceM365Operation('read_task', { graphPath: '/me/todo/lists' });
     const r = await fetch('https://graph.microsoft.com/v1.0/me/todo/lists', {
       headers,
     });
@@ -281,7 +307,8 @@ export async function fetchOpenTasks(): Promise<OpenTask[] | null> {
           }>;
         }
       ).value || [];
-  } catch {
+  } catch (err) {
+    if (err instanceof PolicyDeniedError) return null;
     return null;
   }
 
@@ -294,13 +321,17 @@ export async function fetchOpenTasks(): Promise<OpenTask[] | null> {
 
   const raw: TodoTask[] = [];
   try {
+    enforceM365Operation('read_task', {
+      graphPath: `/me/todo/lists/${defaultList.id}/tasks`,
+    });
     const url =
       `https://graph.microsoft.com/v1.0/me/todo/lists/${defaultList.id}/tasks` +
       `?$filter=${encodeURIComponent("status ne 'completed'")}&$top=100`;
     const r = await fetch(url, { headers });
     if (!r.ok) return null;
     raw.push(...(((await r.json()) as { value: TodoTask[] }).value || []));
-  } catch {
+  } catch (err) {
+    if (err instanceof PolicyDeniedError) return null;
     return null;
   }
 

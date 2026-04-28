@@ -19,6 +19,9 @@ import path from 'path';
 
 import { GROUPS_DIR } from './config.js';
 import { logger } from './logger.js';
+import { PolicyDeniedError } from './policy/errors.js';
+import { enforceGwsOperation } from './policy/gws-operations.js';
+import { enforceM365Operation } from './policy/m365-operations.js';
 
 const GWS_BIN = process.env.GWS_BIN || '/opt/homebrew/bin/gws';
 
@@ -83,6 +86,14 @@ async function fileMs365(
   folderId: string,
 ): Promise<{ ok: boolean; status?: number; error?: string }> {
   try {
+    // Move targets here are user-defined ordinary sort folders looked up
+    // from the archive config (Sorted/GC-Student etc.) — not destructive
+    // destinations. The destructive variants (move_to_deleted_items /
+    // junk / recoverable) are denied at the operation level.
+    enforceM365Operation('move_to_ordinary_folder', {
+      graphPath: `/me/messages/${emailId}/move`,
+      destinationFolder: folderId,
+    });
     const r = await fetch(
       `https://graph.microsoft.com/v1.0/me/messages/${emailId}/move`,
       {
@@ -98,6 +109,9 @@ async function fileMs365(
     const bodyText = await r.text();
     return { ok: false, status: r.status, error: bodyText.slice(0, 200) };
   } catch (err) {
+    if (err instanceof PolicyDeniedError) {
+      return { ok: false, error: `policy: ${err.decision.reasonCode}` };
+    }
     return {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
@@ -109,6 +123,20 @@ function fileGmail(
   messageId: string,
   labelId: string,
 ): { ok: boolean; error?: string } {
+  try {
+    // Label changes here are non-destructive: add user-defined sort label,
+    // remove INBOX. Trash and Spam are separate operations and remain
+    // denied at the policy level.
+    enforceGwsOperation('move_to_ordinary_label', {
+      product: 'gmail',
+      command: 'users.messages.modify',
+    });
+  } catch (err) {
+    if (err instanceof PolicyDeniedError) {
+      return { ok: false, error: `policy: ${err.decision.reasonCode}` };
+    }
+    throw err;
+  }
   try {
     const out = execFileSync(
       GWS_BIN,

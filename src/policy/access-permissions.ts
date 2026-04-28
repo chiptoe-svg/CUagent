@@ -174,7 +174,10 @@ function loadAndMergeConfig(
   return validateConfig(merged);
 }
 
-function getConfig(): AccessPermissionsConfig {
+/** Shared config accessor used by every policy evaluator. Other policy
+ *  modules (m365-operations, gws-operations, granted-scopes) import this
+ *  to ensure they observe the same cached config + test-time overrides. */
+export function getConfig(): AccessPermissionsConfig {
   if (cachedConfig === null) {
     cachedConfig = loadAndMergeConfig();
   }

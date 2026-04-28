@@ -74,6 +74,9 @@ import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { getMs365AccessToken } from './ms365-reconciler.js';
 import { evaluateHostAiOperation } from './policy/access-permissions.js';
+import { PolicyDeniedError } from './policy/errors.js';
+import { enforceGwsOperation } from './policy/gws-operations.js';
+import { enforceM365Operation } from './policy/m365-operations.js';
 import { RegisteredGroup } from './types.js';
 
 export interface EmailPreclassifierDeps {
@@ -398,6 +401,21 @@ import { execFileSync } from 'child_process';
 const GWS_BIN = process.env.GWS_BIN || '/opt/homebrew/bin/gws';
 
 function listGmail(sinceIso: string | null): EmailMinimal[] {
+  try {
+    enforceGwsOperation('read_mail', {
+      product: 'gmail',
+      command: 'users.messages.list',
+    });
+  } catch (err) {
+    if (err instanceof PolicyDeniedError) {
+      logger.warn(
+        { reasonCode: err.decision.reasonCode },
+        'email-preclassifier: GWS read_mail denied — skipping Gmail listing',
+      );
+      return [];
+    }
+    throw err;
+  }
   const q = sinceIso
     ? `in:inbox after:${Math.floor(new Date(sinceIso).getTime() / 1000)}`
     : 'in:inbox newer_than:1d';
@@ -559,6 +577,21 @@ function normalizeBody(raw: string): string {
  *  to HTML-stripped text/html. */
 function fetchGmailBody(id: string): string {
   try {
+    enforceGwsOperation('read_mail', {
+      product: 'gmail',
+      command: 'users.messages.get',
+    });
+  } catch (err) {
+    if (err instanceof PolicyDeniedError) {
+      logger.warn(
+        { reasonCode: err.decision.reasonCode, id },
+        'email-preclassifier: GWS read_mail denied — skipping Gmail body fetch',
+      );
+      return '';
+    }
+    throw err;
+  }
+  try {
     const out = execFileSync(
       GWS_BIN,
       [
@@ -635,6 +668,9 @@ function fetchGmailBody(id: string): string {
 
 async function fetchOutlookBody(token: string, id: string): Promise<string> {
   try {
+    enforceM365Operation('read_mail', {
+      graphPath: `/me/messages/${id}`,
+    });
     const r = await fetch(
       `https://graph.microsoft.com/v1.0/me/messages/${id}?$select=body,bodyPreview`,
       { headers: { Authorization: `Bearer ${token}` } },
@@ -664,6 +700,9 @@ async function listOutlook(sinceIso: string | null): Promise<EmailMinimal[]> {
   if (filter) params.set('$filter', filter);
   const url = `https://graph.microsoft.com/v1.0/me/mailFolders/Inbox/messages?${params}`;
   try {
+    enforceM365Operation('read_mail', {
+      graphPath: '/me/mailFolders/Inbox/messages',
+    });
     const r = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -772,6 +811,7 @@ function bucketHintFor(
 
 async function getDefaultTodoListId(token: string): Promise<string | null> {
   try {
+    enforceM365Operation('read_task', { graphPath: '/me/todo/lists' });
     const r = await fetch('https://graph.microsoft.com/v1.0/me/todo/lists', {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -809,6 +849,9 @@ async function createMs365Task(
     body.dueDateTime = { dateTime: dueIsoLocal, timeZone: TIMEZONE };
   }
   try {
+    enforceM365Operation('write_task', {
+      graphPath: `/me/todo/lists/${listId}/tasks`,
+    });
     const r = await fetch(
       `https://graph.microsoft.com/v1.0/me/todo/lists/${listId}/tasks`,
       {

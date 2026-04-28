@@ -19,6 +19,9 @@ import path from 'path';
 import { GROUPS_DIR } from './config.js';
 import { logger } from './logger.js';
 import { getMs365AccessToken } from './ms365-reconciler.js';
+import { PolicyDeniedError } from './policy/errors.js';
+import { enforceGwsOperation } from './policy/gws-operations.js';
+import { enforceM365Operation } from './policy/m365-operations.js';
 import { RegisteredGroup } from './types.js';
 
 const GWS_BIN = process.env.GWS_BIN || '/opt/homebrew/bin/gws';
@@ -164,6 +167,21 @@ function ownAddress(accountAddress: string | undefined): string | null {
  * daily background job.
  */
 function harvestGmail(sinceIso: string | null, own: string | null): string[] {
+  try {
+    enforceGwsOperation('read_mail', {
+      product: 'gmail',
+      command: 'users.messages.list (sent-items)',
+    });
+  } catch (err) {
+    if (err instanceof PolicyDeniedError) {
+      logger.warn(
+        { reasonCode: err.decision.reasonCode },
+        'contacts-harvester: GWS read_mail denied — skipping Gmail sent-items scan',
+      );
+      return [];
+    }
+    throw err;
+  }
   const q = sinceIso
     ? `in:sent after:${Math.floor(new Date(sinceIso).getTime() / 1000)}`
     : `in:sent newer_than:${BOOTSTRAP_WINDOW_DAYS}d`;
@@ -262,6 +280,9 @@ async function harvestMs365(
 
   const out = new Set<string>();
   try {
+    enforceM365Operation('read_mail', {
+      graphPath: '/me/mailFolders/SentItems/messages',
+    });
     const r = await fetch(`${base}?${params.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
