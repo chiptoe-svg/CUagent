@@ -58,6 +58,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
+import { evaluateChannel } from './policy/activation.js';
 import { ensureDefaultProviders } from './provider-registry.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
@@ -1160,7 +1161,25 @@ async function main(): Promise<void> {
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  // Access-permissions policy: skip channels denied by the channels.<name>
+  // entry. Strict mode skips outright; telemetry-only logs the would-be-deny
+  // and proceeds so the existing install keeps working while drift surfaces
+  // in the audit log.
   for (const channelName of getRegisteredChannelNames()) {
+    const decision = evaluateChannel(channelName);
+    if (!decision.allow) {
+      if (decision.enforced) {
+        logger.warn(
+          { channel: channelName, reasonCode: decision.reasonCode },
+          'access-permissions: channel denied by policy — not connecting',
+        );
+        continue;
+      }
+      logger.info(
+        { channel: channelName, reasonCode: decision.reasonCode },
+        'access-permissions: channel would be denied (telemetry-only) — proceeding',
+      );
+    }
     const factory = getChannelFactory(channelName)!;
     const channel = factory(channelOpts);
     if (!channel) {

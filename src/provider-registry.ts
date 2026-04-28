@@ -13,6 +13,7 @@ import os from 'os';
 import path from 'path';
 
 import { logger } from './logger.js';
+import { evaluateDataSource } from './policy/activation.js';
 
 // --- Types ---
 
@@ -83,13 +84,37 @@ export function loadProviders(): ProviderConfig[] {
     }
   }
 
+  // Access-permissions policy: filter providers whose data_source entry is
+  // denied. Strict mode excludes them outright; telemetry-only includes
+  // them but emits a warn so drift is visible in the audit log.
+  const filtered: ProviderConfig[] = [];
+  for (const p of providers) {
+    const decision = evaluateDataSource(p.id);
+    if (decision.allow) {
+      filtered.push(p);
+      continue;
+    }
+    if (decision.enforced) {
+      logger.warn(
+        { providerId: p.id, reasonCode: decision.reasonCode },
+        'access-permissions: data source denied by policy — provider excluded',
+      );
+      continue;
+    }
+    logger.info(
+      { providerId: p.id, reasonCode: decision.reasonCode },
+      'access-permissions: data source would be denied (telemetry-only) — provider included',
+    );
+    filtered.push(p);
+  }
+
   logger.info(
-    { count: providers.length, ids: providers.map((p) => p.id) },
+    { count: filtered.length, ids: filtered.map((p) => p.id) },
     'Loaded provider configs',
   );
 
-  cachedProviders = providers;
-  return providers;
+  cachedProviders = filtered;
+  return filtered;
 }
 
 /** Clear cached providers (for testing or reload). */
