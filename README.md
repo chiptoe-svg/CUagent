@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  A multi-runtime personal assistant that runs agents securely in containers. The functionality and skills are built independly from the model provider allowing flexibilty and contunuity if/when institution contracts or priorities change (OpenAI, Anthropic, Google, and Local LLM are all equally supported).
+  A multi-runtime personal assistant that runs agents securely in containers that fully respects Institution rules and policies. The functionality and skills are built independly from the model provider allowing flexibilty and contunuity if/when institution contracts or priorities change (OpenAI, Anthropic, Google, and Local LLM are all equally supported).
 </p>
 
 <p align="center">
