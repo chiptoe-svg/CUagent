@@ -29,9 +29,26 @@ All SDKs run inside the same container image. The agent-runner detects the runti
 
 External services (MS365, Google Workspace, IMAP) are configured as provider JSON files — no code changes needed to add or remove a provider. Provider tokens are only mounted for authorized groups.
 
-### Architectural exception — host-side LLM classifier
+### Institution-safe mode
 
-The general rule in this codebase is that model-facing cognition runs inside containers. The `/email-taskfinder` residual classifier is the one documented exception: it runs as a direct host-side OpenAI call from `src/email-preclassifier.ts`, not inside a container. Rationale, mitigations (structured-JSON output, sort_folder taxonomy validation, task_title sanitization, body noise-stripping, fetch timeout, retry budget, audit fields, scan-in-progress lock) and revisit conditions are documented in the ADR block at the top of `src/email-preclassifier.ts`. **If you add another host-side LLM call, document it the same way.**
+CUagent operates under an institution-safe posture: a finite set of affirmatively-reviewed capabilities, with everything else implicit-deny. Four orthogonal axes are gated by `config/access-permissions.defaults.json` (public conservative defaults) and `config/access-permissions.local.json` (gitignored per-install overrides):
+
+- **AI providers** — runtime-level allow/deny (Claude, Codex, Gemini, local). Installing the SDK skill is necessary but not sufficient.
+- **Host AI operations** — narrow allowlist for direct host-to-AI calls.
+- **Data sources** — operation-level allow/deny for MS365, GWS, IMAP, OneDrive, Teams, LMS, etc. The operation table is narrower than what the granted Graph or Workspace scope technically permits.
+- **Channels** — channel-level allow/deny. Default permits Telegram in self-only main-group mode; all other channels denied.
+
+A single `institutionSafeMode` flag selects strict enforcement (`true`, `PolicyDeniedError` thrown) vs. telemetry-only (`false`, denials logged but not enforced — public default).
+
+Reviewed scope: delegated Microsoft 365 personal productivity (read/triage own email, identify actions, create drafts, maintain own task list and calendar). Google Workspace runs at parity for the same user plus Docs / Sheets / Slides authoring. Outside the reviewed scope and denied by default: mail send, mail delete, shared mailbox, app-only Graph access, tenant-wide reads, Teams/Slack chat, OneDrive/SharePoint, LMS connectors, restricted-data AI processing, external remote-control channels.
+
+Reference docs: [`docs/INSTITUTION_SAFE_MODE.md`](docs/INSTITUTION_SAFE_MODE.md) (posture), [`docs/APPROVAL_TEMPLATE.md`](docs/APPROVAL_TEMPLATE.md) (private approval template; populated record at `docs/APPROVAL.private.md` — gitignored), [`docs/FUTURE_FEATURE_REVIEW.md`](docs/FUTURE_FEATURE_REVIEW.md) (scope ledger). The container / mount / IPC boundary that the policy layer sits on top of is documented in [`docs/SECURITY.md`](docs/SECURITY.md).
+
+Operational identifiers — Azure app ID, tenant directory, ticket reference, approver names, exact approval text — never appear in tracked source. Real values live in `.env` (gitignored), `docs/APPROVAL.private.md` (gitignored), and `config/access-permissions.local.json` (gitignored). The public repository carries placeholders and templates only.
+
+#### Architectural exception — host-side LLM classifier
+
+The general rule is that model-facing cognition runs inside containers. The `/email-taskfinder` residual classifier is the one documented exception: it runs as a direct host-side OpenAI call from `src/email-preclassifier.ts`, registered as the single entry in `host_ai_operations` in the access-permissions config. Rationale, mitigations (structured-JSON output, sort_folder taxonomy validation, task_title sanitization, body noise-stripping, fetch timeout, retry budget, audit fields including `body_sha256`, scan-in-progress lock) and revisit conditions are documented in the ADR block at the top of `src/email-preclassifier.ts`. **Any new host-side LLM call requires its own explicit `host_ai_operations` entry plus institutional review — do not add a host-side AI call without both.**
 
 ## Key Files
 

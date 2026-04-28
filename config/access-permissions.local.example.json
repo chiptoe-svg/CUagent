@@ -1,0 +1,49 @@
+{
+  "_doc": "Example local override. Copy to access-permissions.local.json (gitignored) and customize. Local entries are deep-merged over the public defaults — only specify what differs. Document each enabled capability with a rationale that references the private approval record.",
+
+  "institutionSafeMode": true,
+
+  "ai_providers": {
+    "_doc": "Example: enable Gemini locally after institutional review.",
+    "gemini": {
+      "allowed": true,
+      "execution": "container_only",
+      "rationale": "Locally approved on YYYY-MM-DD; see docs/APPROVAL.private.md ticket #XXXXX. Free tier API key, contract conditions reviewed."
+    }
+  },
+
+  "host_ai_operations": {
+    "_doc": "Example: extend the email_residual_classifier scope or add a new authorized host-AI operation. Each new entry must be documented with rationale and have institutional review.",
+    "email_residual_classifier": {
+      "max_body_chars": 4000
+    }
+  },
+
+  "data_sources": {
+    "_doc": "Example: enable IMAP for a specific approved account, or unlock additional MS365 operations (e.g., write_calendar without per-event approval). Document the rationale.",
+    "ms365": {
+      "operations": {
+        "write_calendar": "allow"
+      },
+      "rationale_local_override": "Calendar writes pre-approved for personal-productivity scope; see docs/APPROVAL.private.md."
+    }
+  },
+
+  "channels": {
+    "_doc": "Example: enable WhatsApp as an additional self-only channel for personal mobile access.",
+    "whatsapp": {
+      "allowed": true,
+      "mode": "self_only",
+      "rationale": "Personal WhatsApp bot for mobile access to own assistant. Sender allowlist enforces single-user binding."
+    }
+  },
+
+  "private_approval": {
+    "_doc": "These environment-variable hints tell the policy loader where to read your private approval profile. Set them in .env (gitignored) — never commit real values.",
+    "_example_env_settings": {
+      "CUAGENT_APPROVAL_RECORD_PATH": "docs/APPROVAL.private.md",
+      "CUAGENT_APPROVED_AZURE_APP_ID": "<set in .env>",
+      "CUAGENT_TENANT_ID": "<set in .env>"
+    }
+  }
+}

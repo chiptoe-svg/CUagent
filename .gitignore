@@ -24,6 +24,29 @@ groups/telegram_main/*
 *.keys.json
 .env
 
+# Cryptographic material
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+
+# Token caches and credential stores
+.msal-cache/
+.tokens/
+.auth/
+.credentials/
+
+# Private approval / compliance records
+docs/*.private.md
+docs/*ticket*.md
+
+# Local institution-specific config (deep-merged over the public defaults)
+config/*.local.json
+config/*private*.json
+config/*secrets*.json
+
 # Temp files
 .tmp-*
 

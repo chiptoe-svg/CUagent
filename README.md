@@ -28,15 +28,22 @@ This fork adapts [NanoClaw FlexAgents](https://github.com/chiptoe-svg/nanoclaw_f
 
 - **Knowledge Extraction to Obsidian** — Planned off-hours extraction of knowledge from filed emails into an Obsidian vault, organized by date and topic. Separates the expensive comprehension work from real-time triage.
 
-### Privacy Considerations
+### Institution-safe mode
 
-University email contains student information, personnel records, budget data, and research communications. This fork's architecture keeps sensitive data within controlled boundaries:
+University email contains student information, personnel records, budget data, and research communications. This fork's architecture organizes around a deliberate institution-safe posture: a finite set of capabilities that have been affirmatively reviewed, with everything else implicit-deny. The posture is enforced by an access-permissions config that gates four orthogonal axes:
 
-- Agents run in containers with explicit mount scoping — they only see what's mounted
-- Provider tokens are only mounted for authorized groups
-- The MS365 `--enabled-tools` regex ensures the agent only requests OAuth scopes the tenant has approved
-- Local model support via Codex means sensitive classification can run without sending data to cloud APIs
-- Email content stays in provider systems — the agent reads and files but never stores email bodies locally
+- **AI providers** — runtime-level allow/deny (Claude, Codex, Gemini, local). Installing an SDK skill is necessary but not sufficient; the runtime must also be allowed in the permissions config.
+- **Host AI operations** — narrow allowlist for direct host-to-AI calls. The repository registers exactly one such operation: residual email classification, with body cap, noise stripping, sort_folder taxonomy validation, and audit hash all enforced before any data leaves the host.
+- **Data sources** — operation-level allow/deny per provider (MS365, GWS, IMAP, OneDrive, Teams, LMS). The operation table is narrower than what the granted Graph or Workspace scope technically permits — drafts not sends, reads not deletes, ordinary folders not trash/junk/recoverable items.
+- **Channels** — channel-level allow/deny. The public default permits one channel: Telegram in self-only main-group mode. Slack, Discord, WhatsApp, Signal, Matrix, HTTP API, Gmail-as-channel are denied by default.
+
+The reviewed scope is delegated Microsoft 365 personal productivity: read and triage own email, identify actions, create drafts (no autonomous send), maintain own task list, maintain own calendar. Google Workspace runs at parity for the same user plus full Docs / Sheets / Slides authoring control with read-only Drive navigation.
+
+Outside the reviewed scope and denied by default: mail send, mail delete, shared mailbox, app-only Graph access, tenant-wide reads, Teams or Slack chat, OneDrive / SharePoint / general Drive, LMS / SIS connectors, restricted-data processing by AI, external remote-control channels, and any AI vendor not in the registry. The full ledger lives at [docs/FUTURE_FEATURE_REVIEW.md](docs/FUTURE_FEATURE_REVIEW.md).
+
+The posture is configured in two files: [`config/access-permissions.defaults.json`](config/access-permissions.defaults.json) (public, conservative) and `config/access-permissions.local.json` (gitignored, per-install overrides). A single `institutionSafeMode` flag controls whether denials are enforced (`true`) or telemetry-only (`false`, public default). See [`docs/INSTITUTION_SAFE_MODE.md`](docs/INSTITUTION_SAFE_MODE.md) for the full posture, [`docs/APPROVAL_TEMPLATE.md`](docs/APPROVAL_TEMPLATE.md) for the private approval record template (the populated record stays at `docs/APPROVAL.private.md`, gitignored), and [`docs/SECURITY.md`](docs/SECURITY.md) for the container / mount / IPC security boundary that this layer sits on top of.
+
+This fork also relies on the boundary controls described in [docs/SECURITY.md](docs/SECURITY.md): container isolation with explicit mount scoping, per-group IPC namespaces, host-side credential proxy for Claude, and a mount allowlist external to the project root. The access-permissions layer constrains _which calls the system makes_; the container layer constrains _what the system can reach if a call is made_. They are complementary controls, not substitutes.
 
 ---
 
@@ -162,11 +169,11 @@ cd nanoclaw_flexagents
 
 Then open your preferred development tool:
 
-| Dev tool | Command | Persona file |
-|----------|---------|-------------|
-| Claude Code | `claude` | Reads `CLAUDE.md` |
-| Codex CLI | `codex` | Reads `AGENTS.md` |
-| Gemini CLI | `gemini` | Reads `GEMINI.md` (uses Google ADK in containers) |
+| Dev tool    | Command  | Persona file                                      |
+| ----------- | -------- | ------------------------------------------------- |
+| Claude Code | `claude` | Reads `CLAUDE.md`                                 |
+| Codex CLI   | `codex`  | Reads `AGENTS.md`                                 |
+| Gemini CLI  | `gemini` | Reads `GEMINI.md` (uses Google ADK in containers) |
 
 Run `/setup` inside the CLI. It handles everything: dependencies, container runtime, agent SDK selection, authentication, channels, and service configuration.
 
@@ -209,6 +216,7 @@ Talk to your assistant with the trigger word (default: `@Linda` or whatever you 
 ```
 
 Telegram commands:
+
 ```
 /model              — view/switch model for this group
 /model gpt-5.4     — switch to a specific model
@@ -233,6 +241,7 @@ Flow at this layer:
 4. Results stream back through the queue and are sent to the channel.
 
 Core files:
+
 - `src/index.ts` — main orchestrator and message loop
 - `src/channels/*` — channel adapters
 - `src/task-scheduler.ts` — scheduled task execution
@@ -253,6 +262,7 @@ This is where each runtime can:
 - declare capabilities honestly, such as resume support or manual delegation
 
 Core files:
+
 - `src/runtime/types.ts` — neutral runtime interfaces
 - `src/runtime/registry.ts` — runtime self-registration
 - `src/runtime/claude-runtime.ts` — Claude host adapter
@@ -282,6 +292,7 @@ The important distinction is:
 Codex runs inside the same outer container boundary as Claude and Gemini. NanoClaw does not rely on a second nested sandbox inside the Codex process; the security boundary is the container launch policy, mount scoping, and runtime-home setup controlled by the host.
 
 Core files:
+
 - `src/container-runner.ts` — container spawning, mounts, env injection
 - `src/runtime-setup.ts` — runtime home preparation
 - `src/provider-registry.ts` — provider plugin loader (token mounts, MCP servers, tools)
@@ -301,6 +312,7 @@ Flow at this layer:
 4. The runtime module talks to its SDK, streams output, and writes structured results back over stdout/IPC.
 
 Core files:
+
 - `container/agent-runner/src/index.ts` — shared container entrypoint
 - `container/agent-runner/src/runtime-registry.ts` — in-container dispatch
 - `container/agent-runner/src/provider-registry.ts` — container-side provider discovery

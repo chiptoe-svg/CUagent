@@ -1,0 +1,268 @@
+{
+  "_doc": "Public conservative defaults for institution-safe mode. Local installs override via config/access-permissions.local.json (gitignored). See docs/INSTITUTION_SAFE_MODE.md for the full posture, docs/APPROVAL_TEMPLATE.md for private approval records, docs/FUTURE_FEATURE_REVIEW.md for the scope ledger.",
+  "schemaVersion": 1,
+  "institutionSafeMode": false,
+
+  "_doc_institutionSafeMode": "When true, policy denials throw PolicyDeniedError. When false, denials are logged but not enforced (telemetry-only). Public default is false so a fresh clone runs out-of-the-box; institutional installs flip this to true in their local override.",
+
+  "ai_providers": {
+    "_doc": "Runtime-level allow/deny. Gates whether a runtime can spawn at all. Installing the SDK skill (/add-agentSDK-*) is necessary but not sufficient — the runtime must also be allowed here.",
+
+    "claude": {
+      "allowed": true,
+      "execution": "container_only",
+      "rationale": "Anthropic Claude SDK runs inside the container with a host-side credential proxy. No host-direct API calls."
+    },
+    "codex": {
+      "allowed": true,
+      "execution": "container_only",
+      "rationale": "OpenAI Codex SDK runs inside the container. Credential mounted via per-group runtime home; no host-direct API calls."
+    },
+    "gemini": {
+      "allowed": false,
+      "rationale": "Not currently approved for this install. Enable in local override only after institutional review."
+    },
+    "local": {
+      "allowed": false,
+      "rationale": "Local model endpoint not configured. Enable in local override after confirming the endpoint runs without external egress."
+    }
+  },
+
+  "host_ai_operations": {
+    "_doc": "Narrow allowlist for direct host-to-AI calls. Anything not listed is implicit-deny. New host-side AI uses require an explicit entry plus institutional review.",
+
+    "email_residual_classifier": {
+      "allowed": true,
+      "endpoint": "api.openai.com",
+      "model": "gpt-5.4-mini",
+      "source": "user_email_accounts",
+      "source_classification": "internal_use",
+      "max_body_chars": 5000,
+      "rationale": "Residual email classification only — bucket 1 (action_templates) and bucket 2 (skip_senders) are resolved deterministically host-side. Only the residual reaches AI. Body cap, noise stripping, sort_folder taxonomy validation, and audit hash (body_sha256) are all enforced before any data leaves the host. See src/email-preclassifier.ts for the ADR block."
+    }
+  },
+
+  "data_sources": {
+    "_doc": "Operation-level allow/deny per data source. Operations narrower than what the granted scopes technically permit — e.g., Mail.ReadWrite scope is granted, but delete/send/destructive moves are denied at the operation layer.",
+
+    "ms365": {
+      "allowed": true,
+      "auth_mode": "delegated_only",
+      "single_tenant_only": true,
+      "source_classification": "internal_use",
+      "scopes_required": [
+        "User.Read",
+        "Mail.ReadWrite",
+        "Calendars.ReadWrite",
+        "Tasks.ReadWrite"
+      ],
+      "denied_scopes": [
+        "Mail.Send",
+        "Mail.Send.Shared",
+        "Mail.Read.Shared",
+        "Mail.ReadWrite.Shared",
+        "Calendars.Read.Shared",
+        "Calendars.ReadWrite.Shared",
+        "Chat.Read",
+        "Chat.ReadWrite",
+        "ChannelMessage.Read.All",
+        "Files.Read",
+        "Files.ReadWrite",
+        "Files.Read.All",
+        "Files.ReadWrite.All",
+        "Sites.Read.All",
+        "Sites.ReadWrite.All",
+        "User.Read.All",
+        "Directory.Read.All"
+      ],
+      "denied_paths": [
+        "/users/{id}",
+        "/groups/{id}",
+        "/teams/{id}",
+        "/drives/{id}",
+        "/sites/{id}"
+      ],
+      "operations": {
+        "read_mail": "allow",
+        "create_draft": "allow",
+        "update_draft": "allow",
+        "move_to_ordinary_folder": "allow",
+        "read_calendar": "allow",
+        "write_calendar": "allow_with_log",
+        "read_task": "allow",
+        "write_task": "allow",
+        "send_mail": "deny",
+        "forward_mail": "deny",
+        "reply_send_mail": "deny",
+        "delete_mail": "deny",
+        "permanent_delete": "deny",
+        "move_to_deleted_items": "deny",
+        "move_to_junk": "deny",
+        "move_to_recoverable_items": "deny",
+        "read_shared_mailbox": "deny",
+        "read_chat": "deny",
+        "read_files": "deny",
+        "write_files": "deny"
+      },
+      "rationale": "Delegated personal-productivity workflow: own mailbox, calendar, and tasks. Drafts only — no autonomous send. No deletion. No shared mailbox. No app-only tenant-wide reads. Operation table is narrower than what the granted Mail.ReadWrite scope technically permits."
+    },
+
+    "gws": {
+      "allowed": true,
+      "auth_mode": "user_oauth",
+      "single_account_only": true,
+      "source_classification": "internal_use",
+      "operations": {
+        "read_mail": "allow",
+        "create_draft": "allow",
+        "update_draft": "allow",
+        "move_to_ordinary_label": "allow",
+        "read_calendar": "allow",
+        "write_calendar": "allow_with_log",
+        "read_task": "allow",
+        "write_task": "allow",
+        "send_mail": "deny",
+        "forward_mail": "deny",
+        "reply_send_mail": "deny",
+        "delete_mail": "deny",
+        "permanent_delete": "deny",
+        "move_to_trash": "deny",
+        "move_to_spam": "deny",
+
+        "docs_read": "allow",
+        "docs_create": "allow",
+        "docs_update": "allow",
+        "docs_delete": "deny",
+        "sheets_read": "allow",
+        "sheets_create": "allow",
+        "sheets_update": "allow",
+        "sheets_delete": "deny",
+        "slides_read": "allow",
+        "slides_create": "allow",
+        "slides_update": "allow",
+        "slides_delete": "deny",
+
+        "drive_list": "allow",
+        "drive_read_file": "allow_with_log",
+        "drive_write_file": "deny_unless_doc_sheet_slide",
+        "drive_share": "deny",
+        "drive_make_public": "deny",
+        "drive_change_permissions": "deny"
+      },
+      "rationale": "Google Workspace at parity with MS365 for personal mail/calendar/tasks plus full Docs/Sheets/Slides authoring control. Drive list+read is allowed for finding referenced documents; arbitrary file uploads, sharing, and permission changes are denied."
+    },
+
+    "imap": {
+      "allowed": false,
+      "rationale": "IMAP is a placeholder provider definition. Enable per-account via local override only after institutional review of the specific IMAP host and credential storage."
+    },
+
+    "onedrive_sharepoint": {
+      "allowed": false,
+      "rationale": "OneDrive/SharePoint connectors are out of scope. Reading institutional file stores requires separate review."
+    },
+
+    "google_drive_general": {
+      "allowed": false,
+      "rationale": "General Google Drive file connector is out of scope. The GWS provider above grants Docs/Sheets/Slides authoring plus list+read access for navigation; arbitrary Drive file operations require separate review."
+    },
+
+    "teams_chat": {
+      "allowed": false,
+      "rationale": "Teams chat read/write is out of scope. Requires separate review with explicit Chat.* scopes; not granted by default."
+    },
+
+    "lms_course_systems": {
+      "allowed": false,
+      "rationale": "Learning-management-system connectors (Canvas, Blackboard, etc.) are out of scope. Course/student records access requires separate institutional review."
+    },
+
+    "obsidian_vault": {
+      "allowed": false,
+      "rationale": "Knowledge-extraction-to-Obsidian is a planned future feature. Enable per-vault in local override after confirming the vault contains no restricted data."
+    }
+  },
+
+  "channels": {
+    "_doc": "Channel-level allow/deny. Determines which inbound channels can wake or trigger the agent. Each entry should make explicit whether it is a self-only channel or a multi-user remote-control surface.",
+
+    "telegram": {
+      "allowed": true,
+      "mode": "self_only_main_group",
+      "rationale": "Personal bot binding to the user's own main group. Sender allowlist enforced upstream. Not a multi-user remote-control surface."
+    },
+    "slack": {
+      "allowed": false,
+      "rationale": "Out of scope. Slack channel skill exists but is not enabled by default."
+    },
+    "discord": {
+      "allowed": false,
+      "rationale": "Out of scope."
+    },
+    "whatsapp": {
+      "allowed": false,
+      "rationale": "Out of scope. Personal WhatsApp bot skill exists but is not enabled by default."
+    },
+    "signal": {
+      "allowed": false,
+      "rationale": "Out of scope."
+    },
+    "matrix": {
+      "allowed": false,
+      "rationale": "Out of scope."
+    },
+    "emacs": {
+      "allowed": false,
+      "rationale": "Local Emacs HTTP bridge — out of scope by default; enable in local override if used."
+    },
+    "http_api": {
+      "allowed": false,
+      "rationale": "Out of scope. If enabled, must bind to 127.0.0.1 only and require an API token."
+    },
+    "gmail_inbound": {
+      "allowed": false,
+      "rationale": "Email-as-a-channel (inbound mail triggers the agent) is distinct from the GWS data-source provider. Out of scope by default."
+    },
+    "discord_bot": {
+      "allowed": false,
+      "rationale": "Out of scope."
+    },
+    "nanovoice": {
+      "allowed": false,
+      "rationale": "iOS voice app channel — out of scope by default."
+    }
+  },
+
+  "future_features_requiring_review": [
+    "Mail.Send / autonomous email sending",
+    "Email deletion / move-to-trash / permanent delete",
+    "Shared mailbox or shared calendar access",
+    "App-only / client-credentials Graph access",
+    "Tenant-wide directory reads",
+    "Teams or Slack chat reading",
+    "OneDrive / SharePoint / Drive general file access",
+    "LMS / SIS / advising-system data sources",
+    "Reading course rosters or student records from any system",
+    "Restricted-data processing by AI",
+    "New AI vendor not in this registry",
+    "External plugins, bots, or remote-control channels not in this registry",
+    "Generating presentations or materials from institutional data sources",
+    "Per-content data classification (regex/ML scan within unstructured input)"
+  ],
+
+  "private_approval": {
+    "_doc": "Private approval records (approver, ticket, app ID, tenant ID, scope details) are stored in docs/APPROVAL.private.md and config/access-permissions.local.json — both gitignored. See docs/APPROVAL_TEMPLATE.md for the template.",
+    "approval_record_path_env": "CUAGENT_APPROVAL_RECORD_PATH",
+    "approved_app_id_env": "CUAGENT_APPROVED_AZURE_APP_ID",
+    "tenant_id_env": "CUAGENT_TENANT_ID"
+  },
+
+  "logging": {
+    "_doc": "Audit logging policy. The host-side preclassifier already records body_sha256 and body_chars_sent per residual classification (see src/email-preclassifier.ts). This section governs what the policy layer itself logs.",
+    "log_policy_decisions": true,
+    "log_raw_email_bodies": false,
+    "log_raw_prompts": false,
+    "log_secrets": false,
+    "hash_sensitive_content": true
+  }
+}
