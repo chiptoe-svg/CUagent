@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/nanoclaw-logo.png" alt="NanoClaw FlexAgents" width="400">
+  <img src="assets/cuagent.png" alt="NanoClaw FlexAgents" width="400">
 </p>
 
 <p align="center">
