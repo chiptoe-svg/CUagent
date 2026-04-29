@@ -24,7 +24,7 @@ This fork adapts [NanoClaw FlexAgents](https://github.com/chiptoe-svg/nanoclaw_f
 
 - **MS365 Integration Under Tenant Restrictions** — The university's Azure AD tenant requires admin consent for API permissions, blocking the typical OAuth self-service flow. This fork includes permission discovery tooling that works within these constraints — building the MCP tool filter from explicitly granted permissions rather than requesting scopes the tenant will reject.
 
-- **Multi-Runtime Agent Support** — Using Codex (OpenAI) as the primary runtime with Local LLM's, Claude or Gemini available for specific tasks. The ability to switch runtimes per group means privacy-sensitive work could use local models via Ollama while general tasks use cloud APIs.
+- **Multi-Runtime Agent Support** — Using Codex (OpenAI) as the primary runtime with Local LLM's, Claude or Gemini available for specific tasks. The ability to switch runtimes per group means privacy-sensitive work could use local models via Ollama, etc. while general tasks use cloud APIs.
 
 - **Knowledge Extraction to Obsidian** — Planned off-hours extraction of knowledge from filed emails into an Obsidian vault, organized by date and topic. Separates the expensive comprehension work from real-time triage.
 
