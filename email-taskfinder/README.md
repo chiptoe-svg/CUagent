@@ -3,8 +3,7 @@
 A small, single-purpose personal assistant: scans your inbox a few times a day,
 identifies actionable mail, and creates Microsoft 365 To Do tasks.
 
-Stripped down from [CUagent](https://github.com/chiptoe-svg/CUagent) — just the
-host-side classifier, MS365 task creation, and an optional codex-CLI fallback.
+Some shared ideas with sidestream project: [GC_Agent_Course](https://github.com/chiptoe-svg/nanoclaw_gccourse), but this one much simplified, and narrowly focussed on personal assistant aspects.
 No channels, no containers, no agent loop, no daemon.
 
 ## How it works
