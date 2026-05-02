@@ -1,0 +1,24 @@
+# Folder taxonomy. The classifier MUST return a sort_folder from this list.
+# Copy to taxonomy.yaml and edit to match your filing system.
+
+taxonomy:
+  - /teaching/courses
+  - /teaching/admin
+  - /research/grants
+  - /research/papers
+  - /service/department
+  - /service/external
+  - /admin/hr
+  - /admin/finance
+  - /admin/it
+  - /personal/family
+  - /personal/finance
+  - /noise/auto-notifications
+  - /noise/calendar-invites
+  - /noise/promo
+
+# Optional: short hint per folder, included in the classifier prompt.
+taxonomy_context:
+  /teaching/courses: 'Specific course mail (rosters, student questions, syllabus updates).'
+  /research/grants: 'Sponsored-research correspondence, NSF/NIH portals, budget reports.'
+  /admin/hr: 'Benefits, leave, contracts, performance review.'

@@ -1,0 +1,30 @@
+# Bucket 1 + Bucket 2 deterministic rules. Copy to classification.yaml and edit.
+#
+# action_templates  -- senders + subject patterns that always create the same task,
+#                      or are always skipped. Zero LLM cost.
+# skip_senders      -- senders that should never produce a task (newsletters, etc.).
+# overrides         -- per-email-id manual decisions. Last-resort escape hatch.
+
+action_templates:
+  - name: payroll-deposit
+    match:
+      from_address: payroll@example.edu
+      subject_contains: ['Direct Deposit', 'Pay Statement']
+    skip: true   # already auto-archived; no task needed
+
+  # - name: course-eval-reminder
+  #   match:
+  #     from_domain: surveys.example.edu
+  #     subject_contains: ['Course Evaluation']
+  #   create_task:
+  #     title: 'Complete course evaluation'
+  #     folder: '/teaching/admin'
+  #     due_offset_days: 7
+
+skip_senders:
+  - from_domain: noreply.example.edu
+    folder: '/noise/auto-notifications'
+  - from_address: do-not-reply@calendar.google.com
+    folder: '/noise/calendar-invites'
+
+overrides: []

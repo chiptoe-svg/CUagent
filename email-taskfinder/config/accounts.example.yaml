@@ -1,0 +1,13 @@
+# Email accounts to scan. Copy to accounts.yaml and edit.
+# Authentication for each account is configured via .env.
+
+accounts:
+  - id: outlook-primary
+    type: ms365
+    address: you@example.edu
+    enabled: true
+
+  # - id: gmail-primary
+  #   type: gws
+  #   address: you@gmail.com
+  #   enabled: false

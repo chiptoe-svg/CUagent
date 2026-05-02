@@ -1,0 +1,9 @@
+# Email addresses you've corresponded with. Mail from these addresses
+# bypasses the outreach heuristic (bucket 3: solicited).
+#
+# This list is normally maintained automatically by harvesting your sent
+# folder; for v1, populate it by hand or via a one-shot script.
+
+known_contacts:
+  # - colleague@example.edu
+  # - friend@gmail.com

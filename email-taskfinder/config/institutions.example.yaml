@@ -1,0 +1,9 @@
+# Domains to treat as institutional / solicited. Mail from these domains
+# bypasses the outreach heuristic and goes straight to the LLM classifier
+# (bucket 3: solicited).
+
+institutions:
+  - example.edu
+  - clemson.edu
+  # - nsf.gov
+  # - nih.gov

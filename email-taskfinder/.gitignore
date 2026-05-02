@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+
+# Local credentials and runtime state — never commit
+.env
+.env.local
+state/
+config/*.local.yaml
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
